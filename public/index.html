@@ -236,7 +236,6 @@ html{background:var(--bg)!important}body{font-family:Inter,ui-sans-serif,system-
       <div class="field reset-field"><label>&nbsp;</label><button id="resetCountdown" class="reset-timer" title="Reset Countdown ke 60000" aria-label="Reset Countdown ke 60000">↻</button></div>
     </div>
     <div class="duel-settings-row">
-      <div class="field"><label for="bruteMode">Optionbox Brute</label><select id="bruteMode"><option value="1">Brute 1</option><option value="2">Brute 2</option><option value="3">Brute 3</option><option value="4">Brute 4</option><option value="5">Brute 5</option><option value="6">Brute 6</option><option value="7">Brute 7</option><option value="8">Brute 8</option><option value="9">Brute 9</option><option value="10">Brute 10</option></select></div>
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="100"></div>
       <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="10"></div>
       <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="10"></div>
@@ -1056,13 +1055,11 @@ async function kickAll(){
   }
   const room=getRoom();
   if(!room){log(0,'KICKALL ERROR: Room wajib diisi');return;}
-  const selectedTargets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean).slice(0,10);
-  const bruteMode=Math.min(10,Math.max(1,Number(document.getElementById('bruteMode').value)||1));
-  const targets=selectedTargets.slice(0,bruteMode);
+  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
   if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
   const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
-  const cfg={room,targets,bruteMode,loop,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
-  log(0,`KICKALL mulai: Brute ${cfg.bruteMode} | ${targets.length} target | batch=2 | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  const cfg={room,targets,loop,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
+  log(0,`KICKALL mulai: ${targets.length} target | asyncio.gather | jeda tiap 3 target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
   // the response would then leave the button stuck on STOP KICK.
@@ -1370,7 +1367,6 @@ function collectKickSet(){
     version:1,
     delaySocket:Number(document.getElementById("delaySocket").value)||0,
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
-    bruteMode:Number(document.getElementById("bruteMode").value)||1,
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||100,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
@@ -1380,7 +1376,6 @@ function collectKickSet(){
 function applyKickSet(cfg){
   document.getElementById("delaySocket").value=String(cfg.delaySocket??10);
   document.getElementById("delayTarget").value=String(cfg.delayTarget??10);
-  document.getElementById("bruteMode").value=String(Math.min(10,Math.max(1,Number(cfg.bruteMode??1)||1)));
   document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
   document.getElementById("loopKick").value=String(cfg.loopKick??45);
   
