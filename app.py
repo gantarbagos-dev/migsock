@@ -365,34 +365,69 @@ async def publish_browser_event(session_id, payload):
 
 @require_auth
 async def stop_kick_loop(request):
-    """Stop the active KICK ALL job for this authenticated browser session."""
+    """Stop active KICK ALL jobs owned by this authenticated session.
+
+    Mark all job state as stopped before cancelling tasks, then await task
+    cancellation so the endpoint does not report completion while workers
+    are still unwinding. A room value scopes the stop to that room; an empty
+    room stops all jobs owned by this session only.
+    """
     session_id = request.get("session_id")
-    room = str((await request.json()).get("room", "")).strip() if request.can_read_body else ""
+    try:
+        data = await request.json() if request.can_read_body else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    room = str(data.get("room", "")).strip()
     room_key = _norm_room_key(room) if room else None
     stopped = 0
+    tasks_to_wait = []
 
+    # Iterate over a snapshot because callbacks may remove dictionary entries.
     for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
         if job_key[0] != session_id:
             continue
         if room_key and job_key[1] != room_key:
             continue
 
-        # Remove state first so late upstream kick events cannot schedule
-        # replacement kicks after STOP has been pressed.
-        states = ACTIVE_KICK_JOBS.pop(job_key, [])
-        for state in states:
+        # Mark state first: event callbacks must not schedule replacements
+        # once STOP has been requested.
+        states = ACTIVE_KICK_JOBS.get(job_key, [])
+        for state in list(states):
             state["stopped"] = True
             for replacement_task in list(state.get("replacement_tasks", set())):
                 if replacement_task and not replacement_task.done():
                     replacement_task.cancel()
+                    tasks_to_wait.append(replacement_task)
 
-        handles = ACTIVE_KICK_TASK_HANDLES.pop(job_key, {})
-        for job_id, task in list(handles.items()):
+        handles = ACTIVE_KICK_TASK_HANDLES.get(job_key, {})
+        for _job_id, task in list(handles.items()):
             if task and not task.done():
                 task.cancel()
+                tasks_to_wait.append(task)
                 stopped += 1
 
         ACTIVE_KICK_TASKS.pop(job_key, None)
+
+    if tasks_to_wait:
+        await asyncio.gather(*tasks_to_wait, return_exceptions=True)
+
+    # Task done callbacks normally clean these entries; remove any stale
+    # handles defensively after cancellation has settled.
+    for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
+        if job_key[0] != session_id or (room_key and job_key[1] != room_key):
+            continue
+        handles = ACTIVE_KICK_TASK_HANDLES.get(job_key, {})
+        for job_id, task in list(handles.items()):
+            if task is None or task.done():
+                handles.pop(job_id, None)
+        if not handles:
+            ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
+        if not ACTIVE_KICK_TASKS.get(job_key):
+            ACTIVE_KICK_TASKS.pop(job_key, None)
+        if not ACTIVE_KICK_JOBS.get(job_key):
+            ACTIVE_KICK_JOBS.pop(job_key, None)
 
     return web.json_response({"ok": True, "stopped": stopped})
 
@@ -404,15 +439,13 @@ async def kick_loop(request):
     except Exception:
         return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
     room = str(data.get("room", "")).strip()
-    targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()][:10]
+    targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
     try:
-        brute_mode = min(10, max(1, int(data.get("bruteMode", len(targets) or 1))))
-        targets = targets[:brute_mode]
         loops = max(1, int(data.get("loop", 1)))
-        delay_socket = max(0, int(data.get("delaySocket", 10)))
         kick_limit_per_ws = min(
             KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
+        delay_socket = max(0, int(data.get("delaySocket", 10)))
         delay_target = max(0, int(data.get("delayTarget", 10)))
     except Exception:
         return web.json_response({"ok": False, "error": "Parameter kick tidak valid"}, status=400)
@@ -421,7 +454,7 @@ async def kick_loop(request):
     session_id = request.get("session_id")
     socket_entries = session_sockets(session_id)
     own_ws_names = {name.casefold() for name, _ws in socket_entries}
-    targets = [t for t in targets if t.casefold() not in own_ws_names][:10]
+    targets = [t for t in targets if t.casefold() not in own_ws_names]
     if not socket_entries:
         return web.json_response({"ok": False, "error": "Tidak ada WebSocket yang aktif"}, status=409)
     if not targets:
@@ -464,8 +497,8 @@ async def kick_loop(request):
         "ok": True, "accepted": True, "jobId": job_id,
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
-        "bruteMode": brute_mode, "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "delayTarget": delay_target,
+        "kickLimitPerWs": kick_limit_per_ws,
+        "delaySocket": delay_socket, "delayTarget": delay_target, "dispatch": "asyncio.gather",
         "transport": "browser-ws-events"
     }, status=202)
 
@@ -527,35 +560,22 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             return False
 
     async def fanout_target(target, is_replacement=False):
-        """Dispatch WS in a flat cadence controlled by the Delay Socket textbox.
-
-        The configured value is the gap between consecutive WS starts, not a
-        cumulative delay value. For example, 10ms means WS1 starts, then WS2
-        about 10ms later, WS3 about 10ms after WS2, and so on. Deadlines are
-        anchored to a monotonic clock so task-creation overhead does not add a
-        fresh delay on top of every interval.
-        """
+        """Send to all active upstream WebSockets concurrently with gather()."""
         if replacement_state.get("stopped") or target_is_kicked(target):
             return 0
         active = [(name, ws) for name, ws in socket_entries if not ws.closed]
         if not active:
             return 0
-
-        # Delay Socket is a per-transition pause: launch one WS action, then
-        # wait the configured duration before launching the next WS action.
-        # Do not calculate deadlines from a common start time or accumulate
-        # a separate delay on top of the configured interval.
-        interval = max(0, delay_socket) / 1000.0
         tasks = []
+        socket_interval = max(0, delay_socket) / 1000.0
         for index, (name, ws) in enumerate(active):
-            if replacement_state.get("stopped"):
-                break
             tasks.append(asyncio.create_task(
                 send_direct(name, ws, target, is_replacement=is_replacement)
             ))
-            if index < len(active) - 1 and interval:
-                await asyncio.sleep(interval)
-
+            # Stagger task starts by Delay Socket while allowing earlier tasks
+            # to remain in flight; gather still waits for all tasks together.
+            if socket_interval and index + 1 < len(active):
+                await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return sum(1 for result in results if result is True)
 
@@ -582,6 +602,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
     ACTIVE_KICK_JOBS.setdefault((session_id, room_key), []).append(replacement_state)
 
     loop_no = 0
+    processed_target_count = 0
     try:
         while True:
             if loop_no >= loops:
@@ -603,13 +624,13 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 "mode": "parallel-fanout-direct",
             })
 
-            # Targets are grouped for status reporting only. Delay Target is
-            # applied between every consecutive target, including group edges.
-            for batch_start in range(0, len(targets), 2):
+            # Status is grouped by three targets. Delay Target is applied after
+            # every three processed targets, including across loop boundaries.
+            for batch_start in range(0, len(targets), 3):
                 if replacement_state.get("stopped"):
                     break
                 batch_targets = [
-                    target for target in targets[batch_start:batch_start + 2]
+                    target for target in targets[batch_start:batch_start + 3]
                     if not target_is_kicked(target)
                 ]
                 if not batch_targets:
@@ -626,6 +647,8 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 })
 
                 for target_index, target in enumerate(batch_targets):
+                    if replacement_state.get("stopped"):
+                        break
                     await publish_browser_event(session_id, {
                         "type": "kick.target.fanout.started",
                         "jobId": job_id,
@@ -639,6 +662,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
                     result = await fanout_target(target)
                     sent = result if isinstance(result, int) else 0
+                    processed_target_count += 1
                     await publish_browser_event(session_id, {
                         "type": "kick.target.fanout.completed",
                         "jobId": job_id,
@@ -651,13 +675,13 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                         "sent": sent,
                     })
 
-                    if replacement_state.get("stopped"):
-                        break
                     has_more_targets = (
                         target_index + 1 < len(batch_targets)
-                        or batch_start + 2 < len(targets)
+                        or batch_start + 3 < len(targets)
+                        or loop_no < loops
                     )
-                    if has_more_targets and delay_target and not replacement_state.get("stopped"):
+                    if (processed_target_count % 3 == 0 and has_more_targets
+                            and delay_target and not replacement_state.get("stopped")):
                         await asyncio.sleep(delay_target / 1000.0)
 
                 await publish_browser_event(session_id, {
