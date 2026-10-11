@@ -646,7 +646,7 @@ function clearTroopClientState(){
   userCount.textContent="0";
   updateTargetCount();
 }
-function loginAll(){for(let i=0;i<N;i++){const x=cred(i);if(x.username&&x.password)setTimeout(()=>loginOne(i),i*200)}}
+function loginAll(){for(let i=0;i<N;i++){const x=cred(i);if(x.username&&x.password)loginOne(i)}}
 async function logoutAll(){
   clearTroopClientState();
   const resetPromise=fetch("/api/troop/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>null);

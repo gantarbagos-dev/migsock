@@ -624,13 +624,13 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 "mode": "parallel-fanout-direct",
             })
 
-            # Status is grouped by three targets. Delay Target is applied after
-            # every three processed targets, including across loop boundaries.
-            for batch_start in range(0, len(targets), 3):
+            # Delay Target is applied after every four processed targets,
+            # including across loop boundaries (e.g. 9, 10, 1, 2).
+            for batch_start in range(0, len(targets), 4):
                 if replacement_state.get("stopped"):
                     break
                 batch_targets = [
-                    target for target in targets[batch_start:batch_start + 3]
+                    target for target in targets[batch_start:batch_start + 4]
                     if not target_is_kicked(target)
                 ]
                 if not batch_targets:
@@ -677,10 +677,10 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
                     has_more_targets = (
                         target_index + 1 < len(batch_targets)
-                        or batch_start + 3 < len(targets)
+                        or batch_start + 4 < len(targets)
                         or loop_no < loops
                     )
-                    if (processed_target_count % 3 == 0 and has_more_targets
+                    if (processed_target_count % 4 == 0 and has_more_targets
                             and delay_target and not replacement_state.get("stopped")):
                         await asyncio.sleep(delay_target / 1000.0)
 
