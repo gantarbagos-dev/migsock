@@ -327,8 +327,7 @@ async def publish_browser_event(session_id, payload):
     """Queue browser UI updates without blocking the Kick engine.
 
     Browser/WebView delivery is best-effort: each send runs in its own task and
-    has a short timeout. A slow or frozen browser therefore cannot hold up the
-    Kick All dispatcher or its Delay Target/Delay Socket timing.
+    has a short timeout. A slow or frozen browser cannot hold up dispatch.
     """
     if not isinstance(payload, dict) or not session_id:
         return
@@ -445,8 +444,6 @@ async def kick_loop(request):
         kick_limit_per_ws = min(
             KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
-        delay_socket = max(0, int(data.get("delaySocket", 10)))
-        delay_target = max(0, int(data.get("delayTarget", 10)))
     except Exception:
         return web.json_response({"ok": False, "error": "Parameter kick tidak valid"}, status=400)
     if not room or not targets:
@@ -473,7 +470,7 @@ async def kick_loop(request):
     ACTIVE_KICK_TASKS[job_key] = [job_id]
     task = asyncio.create_task(_run_kick_job(
         job_id, session_id, room, list(targets), socket_entries, loops,
-        kick_limit_per_ws, delay_socket, delay_target
+        kick_limit_per_ws
     ))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
@@ -498,18 +495,18 @@ async def kick_loop(request):
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
         "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "delayTarget": delay_target, "dispatch": "asyncio.gather",
+        "dispatch": "asyncio.gather",
         "transport": "browser-ws-events"
     }, status=202)
 
-async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
+async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws):
     # Keep worker failures observable by the frontend instead of leaving a
     # permanent RUNNING state. Cancellation is intentionally silent because
     # LOGOUT/RESET explicitly cancels the worker.
     try:
         return await _run_kick_job_impl(
             job_id, session_id, room, targets, socket_entries, loops,
-            kick_limit_per_ws, delay_socket, delay_target
+            kick_limit_per_ws
         )
     except asyncio.CancelledError:
         raise
@@ -517,7 +514,7 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         print(f"[KICK JOB ERROR] job={job_id} session={session_id[:8]} room={room!r}: {exc!r}", flush=True)
         raise
 
-async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
+async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws):
     """Run Kick All with direct parallel fan-out and no per-socket queue.
 
     Each target is dispatched directly to every active upstream socket with
@@ -567,15 +564,10 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         if not active:
             return 0
         tasks = []
-        socket_interval = max(0, delay_socket) / 1000.0
         for index, (name, ws) in enumerate(active):
             tasks.append(asyncio.create_task(
                 send_direct(name, ws, target, is_replacement=is_replacement)
             ))
-            # Stagger task starts by Delay Socket while allowing earlier tasks
-            # to remain in flight; gather still waits for all tasks together.
-            if socket_interval and index + 1 < len(active):
-                await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return sum(1 for result in results if result is True)
 
@@ -602,7 +594,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
     ACTIVE_KICK_JOBS.setdefault((session_id, room_key), []).append(replacement_state)
 
     loop_no = 0
-    processed_target_count = 0
     try:
         while True:
             if loop_no >= loops:
@@ -624,8 +615,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 "mode": "parallel-fanout-direct",
             })
 
-            # Delay Target is applied after every four processed targets,
-            # including across loop boundaries (e.g. 9, 10, 1, 2).
             for batch_start in range(0, len(targets), 4):
                 if replacement_state.get("stopped"):
                     break
@@ -662,7 +651,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
                     result = await fanout_target(target)
                     sent = result if isinstance(result, int) else 0
-                    processed_target_count += 1
                     await publish_browser_event(session_id, {
                         "type": "kick.target.fanout.completed",
                         "jobId": job_id,
@@ -675,14 +663,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                         "sent": sent,
                     })
 
-                    has_more_targets = (
-                        target_index + 1 < len(batch_targets)
-                        or batch_start + 4 < len(targets)
-                        or loop_no < loops
-                    )
-                    if (processed_target_count % 4 == 0 and has_more_targets
-                            and delay_target and not replacement_state.get("stopped")):
-                        await asyncio.sleep(delay_target / 1000.0)
 
                 await publish_browser_event(session_id, {
                     "type": "kick.target.batch.completed",
