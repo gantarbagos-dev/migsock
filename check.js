@@ -799,8 +799,8 @@ async function kickAll(){
   const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean).slice(0,10);
   if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
   const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
-  const cfg={room,targets,loop,kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
-  log(0,`KICKALL mulai: ${targets.length} target | Loop=${cfg.loop} | limit=${cfg.kickLimitPerWs}/s/WS`);
+  const cfg={room,targets,loop,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
+  log(0,`KICKALL mulai: ${targets.length} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms (antar WS) | delayTarget=${cfg.delayTarget}ms (antar target) | limit=${cfg.kickLimitPerWs}/s/WS | no-queue`);
   try{
     const r=await fetch('/api/kick-loop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
     const d=await r.json().catch(()=>({}));
@@ -1099,6 +1099,8 @@ function safeDownloadName(name){
 function collectKickSet(){
   return {
     version:1,
+    delaySocket:Number(document.getElementById("delaySocket").value)||0,
+    delayTarget:Number(document.getElementById("delayTarget").value)||0,
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||100,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
@@ -1106,6 +1108,8 @@ function collectKickSet(){
   };
 }
 function applyKickSet(cfg){
+  document.getElementById("delaySocket").value=String(cfg.delaySocket??10);
+  document.getElementById("delayTarget").value=String(cfg.delayTarget??10);
   document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
   document.getElementById("loopKick").value=String(cfg.loopKick??45);
   
