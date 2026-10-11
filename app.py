@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import os
 import uuid
 from functools import wraps
@@ -224,7 +225,7 @@ def register_socket(session_id, username, ws):
     ACTIVE_UPSTREAM[(session_id, key)] = ws
     SOCKET_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
-    KICK_RATE_STATE.setdefault(id(ws), {"window_start": 0.0, "count": 0})
+    KICK_RATE_STATE.setdefault(id(ws), {"send_times": deque()})
 
 def unregister_socket(session_id, username, ws):
     if session_id:
@@ -294,18 +295,28 @@ async def send_upstream(ws, payload, max_per_second=None):
                     return False
                 if is_kick:
                     wsid = id(ws)
-                    state = KICK_RATE_STATE.setdefault(wsid, {"next_send_at": 0.0})
+                    state = KICK_RATE_STATE.setdefault(wsid, {"send_times": deque()})
+                    send_times = state.setdefault("send_times", deque())
                     loop = asyncio.get_running_loop()
-                    now = loop.time()
-                    wait_for = state.get("next_send_at", 0.0) - now
-                    if wait_for > 0:
-                        await asyncio.sleep(wait_for)
+                    # Strict rolling-window limit: never start more than `limit`
+                    # room.kick sends in any rolling 1-second interval on this WS.
+                    # This check and reservation stay under SOCKET_LOCK so parallel
+                    # tasks cannot pass the same available slot.
+                    while True:
+                        now = loop.time()
+                        while send_times and now - send_times[0] >= 1.0:
+                            send_times.popleft()
+                        if len(send_times) < limit:
+                            break
+                        wait_for = 1.0 - (now - send_times[0])
+                        await asyncio.sleep(max(0.001, wait_for))
+                        if ws.closed:
+                            return False
                     if ws.closed:
                         return False
-                    # Reserve the next slot immediately before the actual send.
-                    # Keeping this under SOCKET_LOCK enforces the cap across
-                    # every concurrent send_kick call for this WebSocket.
-                    state["next_send_at"] = loop.time() + (1.0 / limit)
+                    # Reserve conservatively immediately before sending. A failed
+                    # send still consumes a slot, preventing accidental overrun.
+                    send_times.append(loop.time())
                 await ws.send_json(payload)
                 return True
     except (asyncio.TimeoutError, ConnectionError, OSError):
