@@ -273,14 +273,39 @@ def all_active_ws_usernames(exclude_session=None):
     return names
 
 
-async def send_upstream(ws, payload):
-    """Send one upstream payload without allowing a stalled socket to freeze KICKALL."""
+async def send_upstream(ws, payload, max_per_second=None):
+    """Serialize upstream sends and enforce the configured per-WS kick rate.
+
+    The rate check happens inside the same lock as the actual socket send,
+    so concurrent tasks cannot reserve slots and then burst after waiting on
+    the socket lock. Only room.kick payloads are rate-limited here.
+    """
     lock = SOCKET_LOCKS.setdefault(id(ws), asyncio.Lock())
+    is_kick = isinstance(payload, dict) and payload.get("type") == "room.kick"
+    limit = None
+    if is_kick:
+        limit = KICK_MAX_PER_SECOND if max_per_second is None else min(
+            KICK_MAX_PER_SECOND, max(1, int(max_per_second))
+        )
     try:
         async with asyncio.timeout(KICK_SEND_TIMEOUT):
             async with lock:
                 if ws.closed:
                     return False
+                if is_kick:
+                    wsid = id(ws)
+                    state = KICK_RATE_STATE.setdefault(wsid, {"next_send_at": 0.0})
+                    loop = asyncio.get_running_loop()
+                    now = loop.time()
+                    wait_for = state.get("next_send_at", 0.0) - now
+                    if wait_for > 0:
+                        await asyncio.sleep(wait_for)
+                    if ws.closed:
+                        return False
+                    # Reserve the next slot immediately before the actual send.
+                    # Keeping this under SOCKET_LOCK enforces the cap across
+                    # every concurrent send_kick call for this WebSocket.
+                    state["next_send_at"] = loop.time() + (1.0 / limit)
                 await ws.send_json(payload)
                 return True
     except (asyncio.TimeoutError, ConnectionError, OSError):
@@ -288,40 +313,15 @@ async def send_upstream(ws, payload):
         return False
 
 async def send_kick(ws, room, target, max_per_second=None):
-    """Send one room.kick with a per-upstream-WebSocket rate limit.
-
-    ``max_per_second`` is supplied by KICK ALL. The limiter remains shared
-    per upstream WS, so concurrent dispatches cannot bypass the configured
-    rate. Target pacing is handled by the Kick All batch dispatcher.
-    """
+    """Send one room.kick, strictly rate-limited per upstream WebSocket."""
     limit = KICK_MAX_PER_SECOND if max_per_second is None else min(
         KICK_MAX_PER_SECOND, max(1, int(max_per_second))
     )
-    wsid = id(ws)
-    rate_lock = KICK_RATE_LOCKS.setdefault(wsid, asyncio.Lock())
-    state = KICK_RATE_STATE.setdefault(wsid, {"window_start": 0.0, "count": 0, "last_send": 0.0})
-
-    while True:
-        async with rate_lock:
-            if ws.closed:
-                return False
-            now = asyncio.get_running_loop().time()
-            if state["window_start"] <= 0 or now - state["window_start"] >= 1.0:
-                state["window_start"] = now
-                state["count"] = 0
-            if state["count"] < limit:
-                state["count"] += 1
-                state["last_send"] = now
-                break
-            else:
-                wait_for = max(0.001, 1.0 - (now - state["window_start"]))
-        await asyncio.sleep(wait_for)
-
     return await send_upstream(ws, {
         "type": "room.kick",
         "room": room,
         "target_username": target,
-    })
+    }, max_per_second=limit)
 
 async def publish_browser_event(session_id, payload):
     """Queue browser UI updates without blocking the Kick engine.
