@@ -237,8 +237,6 @@ html{background:var(--bg)!important}body{font-family:Inter,ui-sans-serif,system-
     </div>
     <div class="duel-settings-row">
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="100"></div>
-      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="10"></div>
-      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="10"></div>
       <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" value="45"></div>
     </div>
     <div class="kick-mode-layout">
@@ -1058,8 +1056,8 @@ async function kickAll(){
   const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
   if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
   const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
-  const cfg={room,targets,loop,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
-  log(0,`KICKALL mulai: ${targets.length} target | asyncio.gather | jeda tiap 4 target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  const cfg={room,targets,loop,kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
+  log(0,`KICKALL mulai: ${targets.length} target | asyncio.gather | Loop=${cfg.loop} | limit=${cfg.kickLimitPerWs}/s/WS`);
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
   // the response would then leave the button stuck on STOP KICK.
@@ -1365,8 +1363,6 @@ function safeDownloadName(name){
 function collectKickSet(){
   return {
     version:1,
-    delaySocket:Number(document.getElementById("delaySocket").value)||0,
-    delayTarget:Number(document.getElementById("delayTarget").value)||0,
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||100,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
@@ -1374,8 +1370,6 @@ function collectKickSet(){
   };
 }
 function applyKickSet(cfg){
-  document.getElementById("delaySocket").value=String(cfg.delaySocket??10);
-  document.getElementById("delayTarget").value=String(cfg.delayTarget??10);
   document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
   document.getElementById("loopKick").value=String(cfg.loopKick??45);
   
