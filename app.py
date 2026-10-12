@@ -614,15 +614,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 break
 
             loop_no += 1
-            await publish_browser_event(session_id, {
-                "type": "kick.batch.started",
-                "jobId": job_id,
-                "room": room,
-                "loop": loop_no,
-                "targets": len(targets),
-                "sockets": len(active_sockets),
-                "mode": "parallel-fanout-direct",
-            })
 
             # Delay Target is applied after every ten processed targets,
             # including across loop boundaries when loops continue.
@@ -636,44 +627,13 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 if not batch_targets:
                     continue
 
-                await publish_browser_event(session_id, {
-                    "type": "kick.target.batch.started",
-                    "jobId": job_id,
-                    "room": room,
-                    "loop": loop_no,
-                    "batchSize": len(batch_targets),
-                    "batchTargets": batch_targets,
-                    "sockets": len(active_sockets),
-                })
-
                 for target_index, target in enumerate(batch_targets):
                     if replacement_state.get("stopped"):
                         break
-                    await publish_browser_event(session_id, {
-                        "type": "kick.target.fanout.started",
-                        "jobId": job_id,
-                        "room": room,
-                        "target_username": target,
-                        "loop": loop_no,
-                        "batchIndex": target_index,
-                        "batchSize": len(batch_targets),
-                        "sockets": len(active_sockets),
-                    })
 
                     result = await fanout_target(target)
                     sent = result if isinstance(result, int) else 0
                     processed_target_count += 1
-                    await publish_browser_event(session_id, {
-                        "type": "kick.target.fanout.completed",
-                        "jobId": job_id,
-                        "room": room,
-                        "target_username": target,
-                        "loop": loop_no,
-                        "batchIndex": target_index,
-                        "batchSize": len(batch_targets),
-                        "sockets": len(active_sockets),
-                        "sent": sent,
-                    })
 
                     has_more_targets = (
                         target_index + 1 < len(batch_targets)
@@ -683,20 +643,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     if (processed_target_count % 10 == 0 and has_more_targets
                             and delay_target and not replacement_state.get("stopped")):
                         await asyncio.sleep(delay_target / 1000.0)
-
-                await publish_browser_event(session_id, {
-                    "type": "kick.target.batch.completed",
-                    "jobId": job_id,
-                    "room": room,
-                    "loop": loop_no,
-                    "batchSize": len(batch_targets),
-                })
-            await publish_browser_event(session_id, {
-                "type": "kick.batch.completed",
-                "jobId": job_id,
-                "room": room,
-                "loop": loop_no,
-            })
 
             if replacement_state.get("stopped"):
                 break
