@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections import deque
 import uuid
 from functools import wraps
 from pathlib import Path
@@ -224,7 +225,7 @@ def register_socket(session_id, username, ws):
     ACTIVE_UPSTREAM[(session_id, key)] = ws
     SOCKET_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
-    KICK_RATE_STATE.setdefault(id(ws), {"window_start": 0.0, "count": 0})
+    KICK_RATE_STATE.setdefault(id(ws), {"timestamps": deque()})
 
 def unregister_socket(session_id, username, ws):
     if session_id:
@@ -288,33 +289,41 @@ async def send_upstream(ws, payload):
         return False
 
 async def send_kick(ws, room, target, max_per_second=None):
-    """Send one room.kick with a per-upstream-WebSocket rate limit.
+    """Send one room.kick under a strict per-upstream-WebSocket sliding window.
 
-    ``max_per_second`` is supplied by KICK ALL. The limiter remains shared
-    per upstream WS, so concurrent dispatches cannot bypass the configured
-    rate. Target pacing is handled by the Kick All batch dispatcher.
+    The limiter reserves a send attempt timestamp before writing to the socket.
+    This is deliberately conservative: a failed/ambiguous send still consumes
+    a slot, preventing concurrent tasks from exceeding the configured limit.
     """
     limit = KICK_MAX_PER_SECOND if max_per_second is None else min(
         KICK_MAX_PER_SECOND, max(1, int(max_per_second))
     )
     wsid = id(ws)
     rate_lock = KICK_RATE_LOCKS.setdefault(wsid, asyncio.Lock())
-    state = KICK_RATE_STATE.setdefault(wsid, {"window_start": 0.0, "count": 0, "last_send": 0.0})
+    state = KICK_RATE_STATE.setdefault(wsid, {"timestamps": deque()})
+    # Migrate any in-memory state created by the old fixed-window implementation.
+    timestamps = state.get("timestamps")
+    if timestamps is None:
+        timestamps = deque()
+        state.clear()
+        state["timestamps"] = timestamps
 
+    loop = asyncio.get_running_loop()
     while True:
         async with rate_lock:
             if ws.closed:
                 return False
-            now = asyncio.get_running_loop().time()
-            if state["window_start"] <= 0 or now - state["window_start"] >= 1.0:
-                state["window_start"] = now
-                state["count"] = 0
-            if state["count"] < limit:
-                state["count"] += 1
-                state["last_send"] = now
+            now = loop.time()
+            cutoff = now - 1.0
+            # A timestamp exactly one second old is outside the rolling window.
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            if len(timestamps) < limit:
+                # Reserve under the shared lock so concurrent tasks cannot pass
+                # the limit together. Failed sends remain counted conservatively.
+                timestamps.append(now)
                 break
-            else:
-                wait_for = max(0.001, 1.0 - (now - state["window_start"]))
+            wait_for = max(0.001, timestamps[0] + 1.0 - now)
         await asyncio.sleep(wait_for)
 
     return await send_upstream(ws, {
