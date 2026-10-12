@@ -131,8 +131,8 @@ async def mark_confirmed_kick(payload, session_id):
 # The UI exposes 1..200 kicks/second/WS; 100 preserves the previous default.
 KICK_MAX_PER_SECOND = 200
 KICK_LIMIT_LABEL = f"{KICK_MAX_PER_SECOND}/socket/second"
-# Network/browser sends must never be allowed to stall a KICKALL worker forever.
-KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "5"))
+# Prevent a stalled upstream WebSocket send from blocking KICKALL indefinitely.
+KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "0.1"))
 BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "2"))
 
 DOWNLOAD_DIRS = [
@@ -545,6 +545,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         "claimed": set(),
         "events": {t.casefold(): asyncio.Event() for t in targets},
         "replacement_tasks": set(),
+        "target_dispatch_tasks": set(),
         "replacement_dispatched": 0,
         "stopped": False,
         "lock": asyncio.Lock(),
@@ -567,6 +568,23 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         except Exception as exc:
             print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
             return False
+
+    def _target_dispatch_done(task):
+        replacement_state["target_dispatch_tasks"].discard(task)
+        # Retrieve unexpected exceptions so fire-and-forget tasks never emit
+        # "Task exception was never retrieved" warnings.
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            print(f"[KICK TARGET DISPATCH ERROR] job={job_id}: {exc!r}", flush=True)
+
+    def dispatch_target_without_wait(target):
+        """Schedule a target fan-out and let the target loop continue immediately."""
+        task = asyncio.create_task(fanout_target(target))
+        replacement_state["target_dispatch_tasks"].add(task)
+        task.add_done_callback(_target_dispatch_done)
 
     async def fanout_target(target, is_replacement=False):
         """Send to all active upstream WebSockets concurrently with gather()."""
@@ -640,8 +658,9 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     if replacement_state.get("stopped"):
                         break
 
-                    result = await fanout_target(target)
-                    sent = result if isinstance(result, int) else 0
+                    # Fire-and-forget: schedule this target's fan-out without
+                    # waiting for its send results before dispatching the next target.
+                    dispatch_target_without_wait(target)
                     processed_target_count += 1
 
                     has_more_targets = (
@@ -658,6 +677,12 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             if loop_no >= loops:
                 break
 
+        # The main target loop does not wait between targets, but the job keeps
+        # ownership of in-flight work and drains it before reporting completion.
+        while replacement_state.get("target_dispatch_tasks"):
+            pending = list(replacement_state["target_dispatch_tasks"])
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         while replacement_state.get("replacement_tasks"):
             pending = list(replacement_state["replacement_tasks"])
             if pending:
