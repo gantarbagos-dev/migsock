@@ -951,6 +951,16 @@ async def proxy(request):
         async def upstream_to_browser():
             async for msg in upstream:
                 if msg.type == WSMsgType.TEXT:
+                    # Forward upstream data to the browser immediately. UI delivery
+                    # must not wait for confirmation bookkeeping/database work.
+                    if not browser.closed:
+                        await browser.send_str(msg.data)
+                    else:
+                        break
+
+                    # Preserve the existing confirmation behavior after forwarding.
+                    # This reduces perceived frontend latency without changing the
+                    # upstream message payload or kick dispatch timing.
                     try:
                         payload = __import__("json").loads(msg.data)
                         confirmed = await mark_confirmed_kick(payload, session_id)
@@ -963,7 +973,6 @@ async def proxy(request):
                             })
                     except Exception:
                         pass
-                    await browser.send_str(msg.data)
                 elif msg.type == WSMsgType.BINARY:
                     await browser.send_bytes(msg.data)
                 elif msg.type == WSMsgType.PING:
