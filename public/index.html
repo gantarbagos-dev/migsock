@@ -905,11 +905,35 @@ function clearTroopClientState(){
 }
 function loginAll(){for(let i=0;i<N;i++){const x=cred(i);if(x.username&&x.password)loginOne(i)}}
 async function logoutAll(){
+  // Mark member sockets intentional before backend reset closes their upstreams,
+  // preventing close handlers from treating logout as an unexpected disconnect.
   clearTroopClientState();
-  const resetPromise=fetch("/api/troop/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>null);
-  await Promise.race([resetPromise,new Promise(r=>setTimeout(r,1000))]);
-  for(let i=0;i<N;i++)logoutOne(i);
-  log(0,"LOGOUT ALL: seluruh WS/session troop lama dibersihkan; aplikasi tetap terbuka");
+  for(let i=0;i<N;i++){
+    clients[i].generation++;
+    clients[i].intentionalClose=true;
+    stopPing(i);
+  }
+  let resetResult=null;
+  try{
+    const response=await fetch("/api/troop/reset",{
+      method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"
+    });
+    resetResult=await response.json().catch(()=>null);
+    if(!response.ok||!resetResult?.ok)throw new Error(resetResult?.error||`HTTP ${response.status}`);
+  }catch(e){
+    log(0,"LOGOUT ALL: reset backend tidak terkonfirmasi ("+e.message+"); socket lokal tetap ditutup");
+  }finally{
+    for(let i=0;i<N;i++)logoutOne(i);
+    clearTroopClientState();
+    kickRunning=false;
+    setKickButtonState(false);
+    stopCountdown(true);
+  }
+  if(resetResult?.ok){
+    log(0,`LOGOUT ALL selesai: ${resetResult.closedSockets??0} upstream ditutup, ${resetResult.cancelledJobs??0} job dihentikan, state WS dibersihkan. Aplikasi tetap login.`);
+  }else{
+    log(0,"LOGOUT ALL selesai secara lokal; periksa koneksi server untuk memastikan reset backend terkonfirmasi.");
+  }
 }
 // ENTER ALL / LEAVE ALL mengirim ke setiap WS satu per satu dengan jeda 80 ms.
 let roomBatchAction=null;
@@ -1059,7 +1083,7 @@ async function kickAll(){
   if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
   const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
   const cfg={room,targets,loop,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
-  log(0,`KICKALL mulai: ${targets.length} target | asyncio.gather | Delay Socket tiap 2 WS | jeda tiap 10 target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  log(0,`KICKALL mulai: ${targets.length} target | queue per WS | Delay Socket tiap 3 WS | jeda tiap 10 target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
   // the response would then leave the button stuck on STOP KICK.
