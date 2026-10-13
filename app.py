@@ -132,7 +132,7 @@ async def mark_confirmed_kick(payload, session_id):
 KICK_MAX_PER_SECOND = 200
 KICK_LIMIT_LABEL = f"{KICK_MAX_PER_SECOND}/socket/second"
 # Prevent a stalled upstream WebSocket send from blocking KICKALL indefinitely.
-KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "3.0"))
+KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "1.0"))
 BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "2"))
 
 DOWNLOAD_DIRS = [
@@ -507,7 +507,7 @@ async def kick_loop(request):
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
         "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "delayTarget": delay_target, "dispatch": "asyncio.gather",
+        "delaySocket": delay_socket, "delayTarget": delay_target, "dispatch": "per-ws-queue-workers",
         "transport": "browser-ws-events"
     }, status=202)
 
@@ -527,14 +527,11 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         raise
 
 async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
-    """Run Kick All with direct parallel fan-out and no per-socket queue.
+    """Run Kick All with one FIFO queue and one worker per upstream WebSocket.
 
-    Each target is dispatched directly to every active upstream socket with
-    asyncio.gather(). The existing per-WS rate limiter and per-socket send
-    lock remain the transport safeguards. Repeats a fixed number of complete
-    target-list passes as configured by the Loop textbox.
-    Confirmed room-kick events update shared target state and may trigger an
-    immediate replacement fan-out.
+    Each worker processes its own queue sequentially. A slow or rate-limited WS
+    therefore delays only its own queue; other WS workers keep progressing.
+    The per-WS sliding-window limiter and send timeout remain in force.
     """
     room_key = _norm_room_key(room)
     replacement_state = {
@@ -548,49 +545,89 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         "replacement_dispatched": 0,
         "stopped": False,
         "lock": asyncio.Lock(),
+        "enqueue_lock": asyncio.Lock(),
     }
 
     def target_is_kicked(target):
         key = str(target or "").strip().casefold()
         return bool(key) and key in replacement_state["kicked"]
 
-    async def send_direct(ws_name, ws, target, is_replacement=False):
-        target_key = str(target or "").strip().casefold()
-        if not target_key or ws is None or ws.closed:
-            return False
-        async with replacement_state["lock"]:
-            if replacement_state.get("stopped") or target_key in replacement_state["kicked"]:
-                return False
-        try:
-            result = await send_kick(ws, room, target, kick_limit_per_ws)
-            return result is not False
-        except Exception as exc:
-            print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
-            return False
+    # Capacity covers all main-loop items plus a possible replacement for each
+    # listed target. Workers drain concurrently, so normal scheduling never has
+    # to wait for a slow WS merely because another WS has a full queue.
+    queue_capacity = max(1, len(targets) * loops + len(targets) + 1)
+    queues = {}
+    workers = {}
+    for ws_name, ws in socket_entries:
+        if ws is None or ws.closed:
+            continue
+        queue = asyncio.Queue(maxsize=queue_capacity)
+        queues[id(ws)] = queue
+
+        async def socket_worker(name=ws_name, socket=ws, work_queue=queue):
+            while True:
+                item = await work_queue.get()
+                try:
+                    if item is None:
+                        return
+                    target, is_replacement = item
+                    if replacement_state.get("stopped"):
+                        continue
+                    if socket is None or socket.closed or target_is_kicked(target):
+                        continue
+                    try:
+                        ok = await send_kick(socket, room, target, kick_limit_per_ws)
+                        if not ok:
+                            print(
+                                f"[KICK QUEUE SEND FAILED] job={job_id} ws={name} target={target!r}",
+                                flush=True,
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # An individual socket failure must not terminate its
+                        # worker or affect workers attached to other sockets.
+                        print(
+                            f"[KICK QUEUE ERROR] job={job_id} ws={name} target={target!r}: {exc!r}",
+                            flush=True,
+                        )
+                finally:
+                    work_queue.task_done()
+
+        workers[id(ws)] = asyncio.create_task(socket_worker())
 
     async def fanout_target(target, is_replacement=False):
-        """Send to all active upstream WebSockets concurrently with gather()."""
+        """Enqueue a target to each WS queue without waiting for any send result."""
         if replacement_state.get("stopped") or target_is_kicked(target):
             return 0
-        active = [(name, ws) for name, ws in socket_entries if not ws.closed]
+        active = [
+            (name, ws, queues.get(id(ws)))
+            for name, ws in socket_entries
+            if ws is not None and not ws.closed and queues.get(id(ws)) is not None
+        ]
         if not active:
             return 0
-        tasks = []
         socket_interval = max(0, delay_socket) / 1000.0
-        for index, (name, ws) in enumerate(active):
-            tasks.append(asyncio.create_task(
-                send_direct(name, ws, target, is_replacement=is_replacement)
-            ))
-            # Apply Delay Socket after each pair of socket starts. Tasks from
-            # the current pair remain in flight while the next pair is delayed.
-            # gather still waits for all sends for this target to finish.
-            if socket_interval and (index + 1) % 2 == 0 and index + 1 < len(active):
-                await asyncio.sleep(socket_interval)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return sum(1 for result in results if result is True)
+        queued = 0
+        # Serialize producers (main loop and confirmation-triggered replacement)
+        # so every individual WS observes a deterministic FIFO enqueue order.
+        async with replacement_state["enqueue_lock"]:
+            if replacement_state.get("stopped") or target_is_kicked(target):
+                return 0
+            for index, (_name, ws, queue) in enumerate(active):
+                if ws.closed or replacement_state.get("stopped"):
+                    continue
+                await queue.put((target, is_replacement))
+                queued += 1
+                # Delay Socket: pause after every three WS queue insertions.
+                # This regulates enqueue pacing only; workers never wait for
+                # another WS response, so slow sockets remain isolated.
+                if socket_interval and queued % 3 == 0 and index + 1 < len(active):
+                    await asyncio.sleep(socket_interval)
+        return queued
 
     async def dispatch_replacement(kicked_target):
-        """Directly fan out a replacement target to all active sockets."""
+        """Queue a replacement in FIFO order; never send directly around a worker."""
         if replacement_state.get("stopped"):
             return
         async with replacement_state["lock"]:
@@ -614,19 +651,18 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
     loop_no = 0
     processed_target_count = 0
     try:
-        while True:
-            if loop_no >= loops:
-                break
-
-            active_sockets = [(name, ws) for name, ws in socket_entries if not ws.closed]
+        while loop_no < loops and not replacement_state.get("stopped"):
+            active_sockets = [
+                (name, ws) for name, ws in socket_entries
+                if ws is not None and not ws.closed and id(ws) in queues
+            ]
             if not active_sockets:
                 print(f"[KICK JOB] no active sockets job={job_id}", flush=True)
                 break
 
             loop_no += 1
-
-            # Delay Target is applied after every ten processed targets,
-            # including across loop boundaries when loops continue.
+            # Delay Target remains after each ten targets scheduled, across loop
+            # boundaries. It does not wait for the slowest WS worker to finish.
             for batch_start in range(0, len(targets), 10):
                 if replacement_state.get("stopped"):
                     break
@@ -634,19 +670,11 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     target for target in targets[batch_start:batch_start + 10]
                     if not target_is_kicked(target)
                 ]
-                if not batch_targets:
-                    continue
-
                 for target_index, target in enumerate(batch_targets):
                     if replacement_state.get("stopped"):
                         break
-
-                    # Wait for this target's fan-out results before moving to
-                    # the next target; sends to the active WebSockets remain concurrent.
-                    result = await fanout_target(target)
-                    sent = result if isinstance(result, int) else 0
+                    await fanout_target(target)
                     processed_target_count += 1
-
                     has_more_targets = (
                         target_index + 1 < len(batch_targets)
                         or batch_start + 10 < len(targets)
@@ -656,25 +684,31 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                             and delay_target and not replacement_state.get("stopped")):
                         await asyncio.sleep(delay_target / 1000.0)
 
-            if replacement_state.get("stopped"):
-                break
-            if loop_no >= loops:
-                break
-
+        # Wait for replacement callbacks to finish enqueuing before draining the
+        # queues, so no worker can receive new work after queue.join() completes.
         while replacement_state.get("replacement_tasks"):
             pending = list(replacement_state["replacement_tasks"])
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+        if not replacement_state.get("stopped"):
+            await asyncio.gather(*(queue.join() for queue in queues.values()))
     finally:
+        was_stopped = bool(replacement_state.get("stopped"))
+        replacement_state["stopped"] = True
+        # Cancel workers instead of waiting forever on a WS that is stalled.
+        for worker in workers.values():
+            if not worker.done():
+                worker.cancel()
+        if workers:
+            await asyncio.gather(*workers.values(), return_exceptions=True)
         await publish_browser_event(session_id, {
             "type": "kick.job.finished",
             "jobId": job_id,
             "room": room,
-            "stopped": bool(replacement_state.get("stopped")),
+            "stopped": was_stopped,
             "loopsCompleted": loop_no,
-            "mode": "parallel-fanout-direct",
+            "mode": "per-ws-queue-workers",
         })
-        replacement_state["stopped"] = True
         job_key = (session_id, room_key)
         active_jobs = ACTIVE_KICK_JOBS.get(job_key, [])
         if replacement_state in active_jobs:
@@ -684,37 +718,88 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
 @require_auth
 async def reset_troop_session(request):
-    """Clear troop-side jobs/state without logging the browser application out."""
+    """Stop all troop jobs and clear per-upstream state for this browser session.
+
+    The authenticated web-app session stays valid; member/developer WS sessions,
+    queue workers, kick-rate state, and stale socket registries are reset so the
+    next LOGIN ALL starts from a clean state.
+    """
     session_id = request.get("session_id")
     cancelled = 0
+    tasks_to_wait = []
+    replacement_tasks = []
+
+    # Stop replacement callbacks first so they cannot enqueue new work while
+    # the owning Kick All jobs are being cancelled.
     for job_key in list(ACTIVE_KICK_JOBS.keys()):
-        if job_key[0] == session_id:
-            for state in ACTIVE_KICK_JOBS.get(job_key, []):
-                state["stopped"] = True
-                for replacement_task in list(state.get("replacement_tasks", set())):
-                    if replacement_task and not replacement_task.done():
-                        replacement_task.cancel()
-            ACTIVE_KICK_JOBS.pop(job_key, None)
+        if job_key[0] != session_id:
+            continue
+        for state in list(ACTIVE_KICK_JOBS.get(job_key, [])):
+            state["stopped"] = True
+            for task in list(state.get("replacement_tasks", set())):
+                if task and not task.done():
+                    task.cancel()
+                    replacement_tasks.append(task)
+
+    # Cancel and await all Kick All jobs for this session before clearing state.
     for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
         if job_key[0] != session_id:
             continue
-        handles = ACTIVE_KICK_TASK_HANDLES.pop(job_key, {})
-        for task in list(handles.values()):
+        for task in list(ACTIVE_KICK_TASK_HANDLES.get(job_key, {}).values()):
             if task and not task.done():
                 task.cancel()
+                tasks_to_wait.append(task)
                 cancelled += 1
-        ACTIVE_KICK_TASKS.pop(job_key, None)
-    # Close every upstream belonging to this troop session so the next LOGIN ALL
-    # always starts with fresh developer sessions.
-    sockets = list((SESSION_UPSTREAM.get(session_id) or {}).values())
+
+    if replacement_tasks:
+        await asyncio.gather(*replacement_tasks, return_exceptions=True)
+    if tasks_to_wait:
+        await asyncio.gather(*tasks_to_wait, return_exceptions=True)
+
+    # Collect all sockets owned by this session from both registries, avoiding
+    # duplicates in case one registry is stale or partially updated.
+    sockets_by_id = {id(ws): ws for ws in (SESSION_UPSTREAM.get(session_id) or {}).values() if ws is not None}
+    for (sid, _username), ws in list(ACTIVE_UPSTREAM.items()):
+        if sid == session_id and ws is not None:
+            sockets_by_id[id(ws)] = ws
+    sockets = list(sockets_by_id.values())
     for ws in sockets:
         try:
-            if ws is not None and not ws.closed:
-                await ws.close(code=1000, message=b"troop reset")
+            if not ws.closed:
+                await ws.close(code=1000, message=b"logout all members")
         except Exception:
             pass
+
+    # Remove all session-owned registries, including per-socket rate/lock state.
     SESSION_UPSTREAM.pop(session_id, None)
-    return web.json_response({"ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets), "session": "troop-reset"})
+    for key, ws in list(ACTIVE_UPSTREAM.items()):
+        if key[0] == session_id:
+            ACTIVE_UPSTREAM.pop(key, None)
+    socket_ids_to_clear = {id(ws) for ws in sockets}
+    socket_ids_to_clear.update(
+        ws_id for ws_id, sid in list(WS_SESSION.items()) if sid == session_id
+    )
+    for ws_id in socket_ids_to_clear:
+        if WS_SESSION.get(ws_id) == session_id:
+            WS_SESSION.pop(ws_id, None)
+        SOCKET_LOCKS.pop(ws_id, None)
+        KICK_RATE_LOCKS.pop(ws_id, None)
+        KICK_RATE_STATE.pop(ws_id, None)
+
+    for job_key in list(ACTIVE_KICK_JOBS.keys()):
+        if job_key[0] == session_id:
+            ACTIVE_KICK_JOBS.pop(job_key, None)
+    for job_key in list(ACTIVE_KICK_TASKS.keys()):
+        if job_key[0] == session_id:
+            ACTIVE_KICK_TASKS.pop(job_key, None)
+    for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
+        if job_key[0] == session_id:
+            ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
+
+    return web.json_response({
+        "ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets),
+        "clearedSocketStates": len(sockets), "session": "troop-reset"
+    })
 
 
 def require_admin(handler):
