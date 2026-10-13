@@ -1059,7 +1059,7 @@ async function kickAll(){
   if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
   const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
   const cfg={room,targets,loop,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
-  log(0,`KICKALL mulai: ${targets.length} target | asyncio.gather | Delay Socket antar setiap WS | jeda tiap 10 target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  log(0,`KICKALL mulai: ${targets.length} target | asyncio.gather | Delay Socket tiap 2 WS | jeda tiap 10 target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
   // the response would then leave the button stuck on STOP KICK.
