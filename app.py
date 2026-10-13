@@ -637,7 +637,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
             loop_no += 1
 
-            # Delay Target is applied after every ten processed targets,
+            # Delay Target is applied after every five processed targets,
             # including across loop boundaries when loops continue.
             for batch_start in range(0, len(targets), 10):
                 if replacement_state.get("stopped"):
@@ -664,7 +664,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                         or batch_start + 10 < len(targets)
                         or loop_no < loops
                     )
-                    if (processed_target_count % 10 == 0 and has_more_targets
+                    if (processed_target_count % 5 == 0 and has_more_targets
                             and delay_target and not replacement_state.get("stopped")):
                         await asyncio.sleep(delay_target / 1000.0)
 
