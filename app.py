@@ -337,7 +337,7 @@ async def publish_browser_event(session_id, payload):
 
     Browser/WebView delivery is best-effort: each send runs in its own task and
     has a short timeout. A slow or frozen browser therefore cannot hold up the
-    Kick All dispatcher or its Delay Target/Delay Socket timing.
+    Kick All dispatcher and its Delay Target/Delay Batch timing.
     """
     if not isinstance(payload, dict) or not session_id:
         return
@@ -454,7 +454,7 @@ async def kick_loop(request):
         kick_limit_per_ws = min(
             KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
-        delay_socket = max(0, int(data.get("delaySocket", 10)))
+        delay_batch = max(0, int(data.get("delayBatch", 10)))
         delay_target = max(0, int(data.get("delayTarget", 10)))
     except Exception:
         return web.json_response({"ok": False, "error": "Parameter kick tidak valid"}, status=400)
@@ -482,7 +482,7 @@ async def kick_loop(request):
     ACTIVE_KICK_TASKS[job_key] = [job_id]
     task = asyncio.create_task(_run_kick_job(
         job_id, session_id, room, list(targets), socket_entries, loops,
-        kick_limit_per_ws, delay_socket, delay_target
+        kick_limit_per_ws, delay_batch, delay_target
     ))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
@@ -507,18 +507,18 @@ async def kick_loop(request):
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
         "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "delayTarget": delay_target, "dispatch": "per-ws-queue-workers",
+        "delayBatch": delay_batch, "delayTarget": delay_target, "dispatch": "per-ws-queue-workers",
         "transport": "browser-ws-events"
     }, status=202)
 
-async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
+async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_batch, delay_target):
     # Keep worker failures observable by the frontend instead of leaving a
     # permanent RUNNING state. Cancellation is intentionally silent because
     # LOGOUT/RESET explicitly cancels the worker.
     try:
         return await _run_kick_job_impl(
             job_id, session_id, room, targets, socket_entries, loops,
-            kick_limit_per_ws, delay_socket, delay_target
+            kick_limit_per_ws, delay_batch, delay_target
         )
     except asyncio.CancelledError:
         raise
@@ -526,12 +526,12 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         print(f"[KICK JOB ERROR] job={job_id} session={session_id[:8]} room={room!r}: {exc!r}", flush=True)
         raise
 
-async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
+async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_batch, delay_target):
     """Run Kick All with one FIFO queue and one worker per upstream WebSocket.
 
     Each worker processes its own queue sequentially. A slow or rate-limited WS
     therefore delays only its own queue; other WS workers keep progressing.
-    The per-WS sliding-window limiter and send timeout remain in force.
+    The per-WS sliding-window limiter and send timeout remain in force. Delay Batch controls pacing between WS enqueue batches.
     """
     room_key = _norm_room_key(room)
     replacement_state = {
@@ -607,10 +607,13 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         ]
         if not active:
             return 0
-        socket_interval = max(0, delay_socket) / 1000.0
+        batch_interval = max(0, delay_batch) / 1000.0
         queued = 0
-        # Serialize producers (main loop and confirmation-triggered replacement)
-        # so every individual WS observes a deterministic FIFO enqueue order.
+        queued_in_batch = 0
+        batches_since_delay = 0
+        # One batch consists of up to three WS queue insertions.
+        # Pause after every two batches, then continue with the next batch.
+        # Serialize producers so every WS observes deterministic FIFO enqueue order.
         async with replacement_state["enqueue_lock"]:
             if replacement_state.get("stopped") or target_is_kicked(target):
                 return 0
@@ -619,11 +622,19 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     continue
                 await queue.put((target, is_replacement))
                 queued += 1
-                # Delay Socket: pause after every three WS queue insertions.
-                # This regulates enqueue pacing only; workers never wait for
-                # another WS response, so slow sockets remain isolated.
-                if socket_interval and queued % 3 == 0 and index + 1 < len(active):
-                    await asyncio.sleep(socket_interval)
+                queued_in_batch += 1
+                if queued_in_batch == 3:
+                    queued_in_batch = 0
+                    batches_since_delay += 1
+                    remaining = any(
+                        next_ws is not None and not next_ws.closed
+                        and queues.get(id(next_ws)) is not None
+                        for _next_name, next_ws in active[index + 1:]
+                    )
+                    if batches_since_delay == 2 and remaining:
+                        if batch_interval:
+                            await asyncio.sleep(batch_interval)
+                        batches_since_delay = 0
         return queued
 
     async def dispatch_replacement(kicked_target):
