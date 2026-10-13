@@ -581,9 +581,10 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             tasks.append(asyncio.create_task(
                 send_direct(name, ws, target, is_replacement=is_replacement)
             ))
-            # Stagger task starts by Delay Socket while allowing earlier tasks
-            # to remain in flight; gather still waits for all tasks together.
-            if socket_interval and index + 1 < len(active):
+            # Apply Delay Socket after each pair of socket starts. Tasks from
+            # the current pair remain in flight while the next pair is delayed.
+            # gather still waits for all sends for this target to finish.
+            if socket_interval and (index + 1) % 2 == 0 and index + 1 < len(active):
                 await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return sum(1 for result in results if result is True)

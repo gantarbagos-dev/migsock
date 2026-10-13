@@ -15,6 +15,8 @@ const N=10;
 const clients=Array.from({length:N},()=>({ws:null,loggedIn:false,inRoom:false,pingTimer:null,intentionalClose:false,balance:null,generation:0}));
 const rows=document.getElementById("rows"),roomEl=document.getElementById("room"),userList=document.getElementById("userList"),targetList=document.getElementById("targetList"),userCount=document.getElementById("userCount"),targetCount=document.getElementById("targetCount"),saveLoadEl=document.getElementById("saveLoad");
 let confirmedKickedTargets=new Set();let kickRunning=false;
+// Index target DOM rows by normalized username to avoid rescanning the DOM.
+const targetRowsByKey=new Map();
 const SAVE_PREFIX="migsock_config_";
 let participantUsers=[];
 let participantBySocket=Array.from({length:N},()=>[]);
@@ -266,10 +268,10 @@ function getRange(){
   return {mode:"any-range",values,startWidth:av.length,endWidth:bv.length};
 }
 function refreshUserList(){}
-function updateTargetCount(){targetCount.textContent=targetList.querySelectorAll(".target-item").length}
+function updateTargetCount(){targetCount.textContent=targetRowsByKey.size}
 function targetHas(username){
-  const key=String(username||"").trim().toLowerCase();
-  return !!key && [...targetList.querySelectorAll(".target-item")].some(o=>String(o.dataset.username||"").trim().toLowerCase()===key);
+  const key=stateKey(username);
+  return !!key && targetRowsByKey.has(key);
 }
 function removeConfirmedKickedTarget(username){
   username=String(username||"").trim();
@@ -281,10 +283,9 @@ function removeConfirmedKickedTarget(username){
   appState.participants.delete(key);
   appState.targets.delete(key);
 
-  // Update only affected DOM nodes; do not rebuild the complete USER list.
-  [...targetList.querySelectorAll(".target-item")].forEach(row=>{
-    if(stateKey(row.dataset.username||row.textContent)===key)row.remove();
-  });
+  // Remove only the indexed target row; avoid scanning the complete TARGET DOM.
+  const targetRow=targetRowsByKey.get(key);
+  if(targetRow){targetRow.remove();targetRowsByKey.delete(key);}
   [...userList.querySelectorAll(".user-item")].forEach(row=>{
     const value=stateKey(row.dataset.username||row.querySelector("span")?.textContent||row.textContent);
     if(value===key)row.remove();
@@ -310,15 +311,16 @@ function removeConfirmedKickedTarget(username){
 function addTarget(username){
   const value=String(username||"").trim();
   if(!value)return false;
-  const key=value.toLowerCase();
+  const key=stateKey(value);
   const ownWs=new Set();
   for(let i=0;i<N;i++){const u=cred(i).username;if(u)ownWs.add(u.trim().toLowerCase());}
-  if(ownWs.has(key)||confirmedKickedTargets.has(key)||targetHas(value)||targetList.querySelectorAll(".target-item").length>=10)return false;
+  if(ownWs.has(key)||confirmedKickedTargets.has(key)||targetHas(value)||targetRowsByKey.size>=10)return false;
   const e=document.createElement("div");
   e.className="target-item";
   e.dataset.username=value;
   e.textContent=value;
   targetList.appendChild(e);
+  targetRowsByKey.set(key,e);
   appState.targets.set(key,value);
   updateTargetCount();
   return true;
@@ -569,7 +571,7 @@ function autoAddMatchingTargets(users){
   const best=candidates[0];
   if(!best)return [];
 
-  const capacity=Math.max(0,10-targetList.querySelectorAll('.target-item').length);
+  const capacity=Math.max(0,10-targetRowsByKey.size);
   if(!capacity)return [];
 
   const added=[];
@@ -583,6 +585,7 @@ function clearTargets(){
   autoTargetCycle++;
   const restored=[...new Set(participantUsers)].filter(u=>!confirmedKickedTargets.has(String(u).toLowerCase()));
   targetList.innerHTML="";
+  targetRowsByKey.clear();
   appState.targets.clear();
   autoTargetLocked=false;
   updateTargetCount();
@@ -649,6 +652,7 @@ function clearTroopClientState(){
   }
   confirmedKickedTargets.clear();
   targetList.innerHTML="";
+  targetRowsByKey.clear();
   userList.innerHTML="";
   userCount.textContent="0";
   updateTargetCount();
@@ -751,6 +755,7 @@ function listUser(){
   const room=getRoom();if(!room)return;
   if(autoTargetTimer){clearTimeout(autoTargetTimer);autoTargetTimer=null}
   targetList.innerHTML="";
+  targetRowsByKey.clear();
   userList.innerHTML="";
   userCount.textContent="0";
   autoTargetLocked=false;
