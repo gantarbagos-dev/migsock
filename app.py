@@ -337,7 +337,7 @@ async def publish_browser_event(session_id, payload):
 
     Browser/WebView delivery is best-effort: each send runs in its own task and
     has a short timeout. A slow or frozen browser therefore cannot hold up the
-    Kick All dispatcher and its Delay Target/Delay Batch timing.
+    Kick All dispatcher or its Delay Target/Delay Socket timing.
     """
     if not isinstance(payload, dict) or not session_id:
         return
@@ -454,7 +454,7 @@ async def kick_loop(request):
         kick_limit_per_ws = min(
             KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
-        delay_batch = max(0, int(data.get("delayBatch", 10)))
+        delay_socket = max(0, int(data.get("delaySocket", 10)))
         delay_target = max(0, int(data.get("delayTarget", 10)))
     except Exception:
         return web.json_response({"ok": False, "error": "Parameter kick tidak valid"}, status=400)
@@ -482,7 +482,7 @@ async def kick_loop(request):
     ACTIVE_KICK_TASKS[job_key] = [job_id]
     task = asyncio.create_task(_run_kick_job(
         job_id, session_id, room, list(targets), socket_entries, loops,
-        kick_limit_per_ws, delay_batch, delay_target
+        kick_limit_per_ws, delay_socket, delay_target
     ))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
@@ -507,18 +507,18 @@ async def kick_loop(request):
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
         "kickLimitPerWs": kick_limit_per_ws,
-        "delayBatch": delay_batch, "delayTarget": delay_target, "dispatch": "per-ws-queue-workers",
+        "delaySocket": delay_socket, "delayTarget": delay_target, "dispatch": "per-ws-queue-workers",
         "transport": "browser-ws-events"
     }, status=202)
 
-async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_batch, delay_target):
+async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
     # Keep worker failures observable by the frontend instead of leaving a
     # permanent RUNNING state. Cancellation is intentionally silent because
     # LOGOUT/RESET explicitly cancels the worker.
     try:
         return await _run_kick_job_impl(
             job_id, session_id, room, targets, socket_entries, loops,
-            kick_limit_per_ws, delay_batch, delay_target
+            kick_limit_per_ws, delay_socket, delay_target
         )
     except asyncio.CancelledError:
         raise
@@ -526,12 +526,12 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         print(f"[KICK JOB ERROR] job={job_id} session={session_id[:8]} room={room!r}: {exc!r}", flush=True)
         raise
 
-async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_batch, delay_target):
+async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target):
     """Run Kick All with one FIFO queue and one worker per upstream WebSocket.
 
     Each worker processes its own queue sequentially. A slow or rate-limited WS
     therefore delays only its own queue; other WS workers keep progressing.
-    The per-WS sliding-window limiter and send timeout remain in force. Delay Batch controls pacing between WS enqueue batches.
+    The per-WS sliding-window limiter and send timeout remain in force.
     """
     room_key = _norm_room_key(room)
     replacement_state = {
@@ -607,13 +607,10 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         ]
         if not active:
             return 0
-        batch_interval = max(0, delay_batch) / 1000.0
+        socket_interval = max(0, delay_socket) / 1000.0
         queued = 0
-        queued_in_batch = 0
-        batches_since_delay = 0
-        # One batch consists of up to three WS queue insertions.
-        # Pause after every two batches, then continue with the next batch.
-        # Serialize producers so every WS observes deterministic FIFO enqueue order.
+        # Serialize producers (main loop and confirmation-triggered replacement)
+        # so every individual WS observes a deterministic FIFO enqueue order.
         async with replacement_state["enqueue_lock"]:
             if replacement_state.get("stopped") or target_is_kicked(target):
                 return 0
@@ -622,19 +619,11 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     continue
                 await queue.put((target, is_replacement))
                 queued += 1
-                queued_in_batch += 1
-                if queued_in_batch == 3:
-                    queued_in_batch = 0
-                    batches_since_delay += 1
-                    remaining = any(
-                        next_ws is not None and not next_ws.closed
-                        and queues.get(id(next_ws)) is not None
-                        for _next_name, next_ws in active[index + 1:]
-                    )
-                    if batches_since_delay == 2 and remaining:
-                        if batch_interval:
-                            await asyncio.sleep(batch_interval)
-                        batches_since_delay = 0
+                # Delay Socket limits dispatch between individual WS sockets.
+                # Pause only between sockets, never after the final socket, and
+                # never wait for upstream send completion here.
+                if socket_interval and index + 1 < len(active):
+                    await asyncio.sleep(socket_interval)
         return queued
 
     async def dispatch_replacement(kicked_target):
@@ -729,88 +718,37 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
 @require_auth
 async def reset_troop_session(request):
-    """Stop all troop jobs and clear per-upstream state for this browser session.
-
-    The authenticated web-app session stays valid; member/developer WS sessions,
-    queue workers, kick-rate state, and stale socket registries are reset so the
-    next LOGIN ALL starts from a clean state.
-    """
+    """Clear troop-side jobs/state without logging the browser application out."""
     session_id = request.get("session_id")
     cancelled = 0
-    tasks_to_wait = []
-    replacement_tasks = []
-
-    # Stop replacement callbacks first so they cannot enqueue new work while
-    # the owning Kick All jobs are being cancelled.
     for job_key in list(ACTIVE_KICK_JOBS.keys()):
-        if job_key[0] != session_id:
-            continue
-        for state in list(ACTIVE_KICK_JOBS.get(job_key, [])):
-            state["stopped"] = True
-            for task in list(state.get("replacement_tasks", set())):
-                if task and not task.done():
-                    task.cancel()
-                    replacement_tasks.append(task)
-
-    # Cancel and await all Kick All jobs for this session before clearing state.
+        if job_key[0] == session_id:
+            for state in ACTIVE_KICK_JOBS.get(job_key, []):
+                state["stopped"] = True
+                for replacement_task in list(state.get("replacement_tasks", set())):
+                    if replacement_task and not replacement_task.done():
+                        replacement_task.cancel()
+            ACTIVE_KICK_JOBS.pop(job_key, None)
     for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
         if job_key[0] != session_id:
             continue
-        for task in list(ACTIVE_KICK_TASK_HANDLES.get(job_key, {}).values()):
+        handles = ACTIVE_KICK_TASK_HANDLES.pop(job_key, {})
+        for task in list(handles.values()):
             if task and not task.done():
                 task.cancel()
-                tasks_to_wait.append(task)
                 cancelled += 1
-
-    if replacement_tasks:
-        await asyncio.gather(*replacement_tasks, return_exceptions=True)
-    if tasks_to_wait:
-        await asyncio.gather(*tasks_to_wait, return_exceptions=True)
-
-    # Collect all sockets owned by this session from both registries, avoiding
-    # duplicates in case one registry is stale or partially updated.
-    sockets_by_id = {id(ws): ws for ws in (SESSION_UPSTREAM.get(session_id) or {}).values() if ws is not None}
-    for (sid, _username), ws in list(ACTIVE_UPSTREAM.items()):
-        if sid == session_id and ws is not None:
-            sockets_by_id[id(ws)] = ws
-    sockets = list(sockets_by_id.values())
+        ACTIVE_KICK_TASKS.pop(job_key, None)
+    # Close every upstream belonging to this troop session so the next LOGIN ALL
+    # always starts with fresh developer sessions.
+    sockets = list((SESSION_UPSTREAM.get(session_id) or {}).values())
     for ws in sockets:
         try:
-            if not ws.closed:
-                await ws.close(code=1000, message=b"logout all members")
+            if ws is not None and not ws.closed:
+                await ws.close(code=1000, message=b"troop reset")
         except Exception:
             pass
-
-    # Remove all session-owned registries, including per-socket rate/lock state.
     SESSION_UPSTREAM.pop(session_id, None)
-    for key, ws in list(ACTIVE_UPSTREAM.items()):
-        if key[0] == session_id:
-            ACTIVE_UPSTREAM.pop(key, None)
-    socket_ids_to_clear = {id(ws) for ws in sockets}
-    socket_ids_to_clear.update(
-        ws_id for ws_id, sid in list(WS_SESSION.items()) if sid == session_id
-    )
-    for ws_id in socket_ids_to_clear:
-        if WS_SESSION.get(ws_id) == session_id:
-            WS_SESSION.pop(ws_id, None)
-        SOCKET_LOCKS.pop(ws_id, None)
-        KICK_RATE_LOCKS.pop(ws_id, None)
-        KICK_RATE_STATE.pop(ws_id, None)
-
-    for job_key in list(ACTIVE_KICK_JOBS.keys()):
-        if job_key[0] == session_id:
-            ACTIVE_KICK_JOBS.pop(job_key, None)
-    for job_key in list(ACTIVE_KICK_TASKS.keys()):
-        if job_key[0] == session_id:
-            ACTIVE_KICK_TASKS.pop(job_key, None)
-    for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
-        if job_key[0] == session_id:
-            ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
-
-    return web.json_response({
-        "ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets),
-        "clearedSocketStates": len(sockets), "session": "troop-reset"
-    })
+    return web.json_response({"ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets), "session": "troop-reset"})
 
 
 def require_admin(handler):
