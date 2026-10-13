@@ -580,7 +580,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             return False
 
     async def fanout_target(target, is_replacement=False):
-        """Send to all active upstream WebSockets concurrently with gather()."""
+        """Send to active upstream WebSockets concurrently; isolate per-WS errors."""
         if replacement_state.get("stopped") or target_is_kicked(target):
             return 0
         active = [(name, ws) for name, ws in socket_entries if not ws.closed]
@@ -594,7 +594,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             ))
             # Apply Delay Socket after each pair of socket starts. Tasks from
             # the current pair remain in flight while the next pair is delayed.
-            # gather still waits for all sends for this target to finish.
+            # Other WS tasks remain active while this pair's delay elapses.
             if socket_interval and (index + 1) % 2 == 0 and index + 1 < len(active):
                 await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -624,20 +624,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
     loop_no = 0
     processed_target_count = 0
-    # Target fan-outs run in the background: the next target does not wait
-    # for the previous target's WebSocket sends to finish.
-    inflight_target_tasks = set()
-
-    def track_target_task(task):
-        inflight_target_tasks.add(task)
-        def _done(completed):
-            inflight_target_tasks.discard(completed)
-            try:
-                completed.result()
-            except Exception as exc:
-                print(f"[KICK TARGET TASK ERROR] job={job_id}: {exc!r}", flush=True)
-        task.add_done_callback(_done)
-
+    # Process targets sequentially; fanout_target isolates individual WS failures.
     try:
         while True:
             if loop_no >= loops:
@@ -666,9 +653,10 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     if replacement_state.get("stopped"):
                         break
 
-                    # Dispatch this target without waiting for its WebSocket
-                    # sends. Per-socket send/rate locks still govern each WS.
-                    track_target_task(asyncio.create_task(fanout_target(target)))
+                    # Wait for this target's fan-out to finish before starting
+                    # the next target. Each WS send has its own 1s timeout and
+                    # errors are caught per WS, so one failure won't cancel peers.
+                    await fanout_target(target)
                     processed_target_count += 1
 
                     has_more_targets = (
@@ -689,10 +677,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             pending = list(replacement_state["replacement_tasks"])
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-        # Let already-dispatched target sends finish (or hit the 1s timeout)
-        # before publishing that this kick job has fully finished.
-        while inflight_target_tasks:
-            await asyncio.gather(*list(inflight_target_tasks), return_exceptions=True)
     finally:
         await publish_browser_event(session_id, {
             "type": "kick.job.finished",
