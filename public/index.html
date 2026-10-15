@@ -121,11 +121,11 @@ html{background:var(--bg)!important}body{font-family:Inter,ui-sans-serif,system-
 @media(max-width:600px){.troop-table-card{padding:9px!important}.troop-table-card th:nth-child(1),.troop-table-card td:nth-child(1){width:44%}.troop-table-card th:nth-child(2),.troop-table-card td:nth-child(2){width:41%}.troop-table-card th:nth-child(3),.troop-table-card td:nth-child(3){width:15%}.troop-table-card th,.troop-table-card td{padding:6px 3px!important}.troop-table-card td input{font-size:11px!important;padding:5px 5px!important}.troop-table-card .password-wrap input{font-size:9px!important;padding:4px 3px!important}.troop-table-card .wallet-caption{font-size:9px;min-width:16px}.troop-table-card .section-heading{gap:8px}#userList,#targetList{height:clamp(170px,30vh,260px);padding:4px!important}#userList .user-item,#targetList .target-item{padding:8px 6px!important;font-size:11px;gap:6px}}
 
 /* UI themes: presentation-only overrides; application logic and task controls remain unchanged */
-.ui-switcher{padding:12px!important}
-.ui-switcher-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ui-switcher{width:100%;box-sizing:border-box;padding:12px!important;margin-top:0}
+.ui-switcher-head{display:block;width:100%;min-width:0}
 .ui-switcher-head strong{display:block;font-size:14px}
 .ui-switcher-head small{display:block;color:var(--muted,#94a3b8);font-size:11px;margin-top:4px}
-#uiTheme{min-width:165px;max-width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--ui-border,#334155);background:var(--ui-input,#0f172a);color:var(--ui-text,#e5e7eb);font:inherit}
+#uiTheme{display:block;width:100%;min-width:0;max-width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--ui-border,#334155);background:var(--ui-input,#0f172a);color:var(--ui-text,#e5e7eb);font:inherit}
 .sw-ocean{background:linear-gradient(90deg,#082f49 50%,#075985 50%)}.sw-emerald{background:linear-gradient(90deg,#052e2b 50%,#065f46 50%)}
 .sw-compact{background:linear-gradient(90deg,#111827 50%,#374151 50%)}
 .sw-amoled{background:linear-gradient(90deg,#000 50%,#171717 50%)}.sw-purple{background:linear-gradient(90deg,#2e1065 50%,#6d28d9 50%)}
@@ -218,9 +218,9 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     <button id="tabFlat" class="tab-btn" role="tab" aria-selected="false">FLAT</button>
   </div>
 
-
+  <section id="panelSetting" class="tab-panel active" role="tabpanel">
   <section class="ui-switcher panel" aria-label="Pengaturan tampilan">
-    <div class="ui-switcher-head"><div><strong>🎨 Ganti UI</strong><small>Pilih tampilan — hanya mengubah visual, bukan fungsi script</small></div>
+    <div class="ui-switcher-head"><div><strong>🎨 Ganti UI</strong></div>
       <select id="uiTheme" aria-label="Pilih tampilan">
         <option value="midnight">Midnight — Gelap</option>
         <option value="light">Light — Terang</option>
@@ -237,7 +237,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     </div>
   </section>
 
-  <section id="panelSetting" class="tab-panel active" role="tabpanel">
   <div class="panel section-card login-troop-card">
     <div class="section-heading"><div class="section-icon">👥</div><div><strong>Login Troop</strong><small>Atur username dan password troop</small></div></div>
     <div class="setting-row troop-row">
