@@ -200,11 +200,11 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 </style>
 
 <style id="suicide-toggle-style">
-.suicide-toggle{height:28px;padding:0 8px;border-radius:8px;border:1px solid rgba(100,116,139,.55);font-size:9px;font-weight:800;letter-spacing:.03em;cursor:pointer;white-space:nowrap;transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease}
+.suicide-toggle{height:30px;padding:0 8px;border-radius:8px;border:1px solid rgba(100,116,139,.55);font-size:9px;font-weight:800;letter-spacing:.03em;cursor:pointer;white-space:nowrap;transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease}
 .suicide-toggle:active{transform:scale(.94)}
 .suicide-off{color:#fff;background:rgba(220,38,38,.86);border-color:rgba(248,113,113,.9);box-shadow:0 0 10px rgba(220,38,38,.18)}
 .suicide-on{color:#fff;background:rgba(22,163,74,.9);border-color:rgba(74,222,128,.95);box-shadow:0 0 12px rgba(22,163,74,.25)}
-@media(max-width:390px){.suicide-toggle{font-size:8px;padding:0 5px}}
+@media(max-width:390px){.suicide-toggle{font-size:8px;padding:0 4px;letter-spacing:0}}
 </style>
 </head>
 <body>
@@ -465,10 +465,10 @@ function resetSuicideFeature(reason="reset"){
 function renderSuicideToggle(){
   const button=document.getElementById("suicideToggle");if(!button)return;
   const processed=suicideAffectedUsernames.size;
-  button.textContent=`☠️ ${processed}/3`;
-  button.title=`Suicide ${suicideEnabled?"ON":"OFF"}; ${processed} dari 3 username unik diproses`;
+  button.textContent=suicideEnabled?`☠️ SUICIDE ON · ${processed}/3`:`☠️ SUICIDE OFF`;
+  button.title=suicideEnabled?`Suicide ON; ${processed} dari 3 username unik diproses`:`Suicide OFF`;
   button.setAttribute("aria-pressed",suicideEnabled?"true":"false");
-  button.setAttribute("aria-label",`Suicide ${suicideEnabled?"ON":"OFF"}; ${processed} dari 3 username unik diproses`);
+  button.setAttribute("aria-label",suicideEnabled?`Suicide ON; ${processed} dari 3 username unik diproses`:`Suicide OFF`);
   button.classList.toggle("suicide-on",suicideEnabled);button.classList.toggle("suicide-off",!suicideEnabled);
 }
 function toggleSuicide(){
