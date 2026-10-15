@@ -119,6 +119,69 @@ html{background:var(--bg)!important}body{font-family:Inter,ui-sans-serif,system-
 .listtitle{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 #userCount,#targetCount{display:inline-flex;align-items:center;justify-content:center;min-width:25px;height:24px;padding:0 7px;border-radius:999px;background:rgba(76,132,255,.15);border:1px solid rgba(110,155,255,.22);color:#cfe0ff;font-size:11px;font-weight:850}
 @media(max-width:600px){.troop-table-card{padding:9px!important}.troop-table-card th:nth-child(1),.troop-table-card td:nth-child(1){width:44%}.troop-table-card th:nth-child(2),.troop-table-card td:nth-child(2){width:41%}.troop-table-card th:nth-child(3),.troop-table-card td:nth-child(3){width:15%}.troop-table-card th,.troop-table-card td{padding:6px 3px!important}.troop-table-card td input{font-size:11px!important;padding:5px 5px!important}.troop-table-card .password-wrap input{font-size:9px!important;padding:4px 3px!important}.troop-table-card .wallet-caption{font-size:9px;min-width:16px}.troop-table-card .section-heading{gap:8px}#userList,#targetList{height:clamp(170px,30vh,260px);padding:4px!important}#userList .user-item,#targetList .target-item{padding:8px 6px!important;font-size:11px;gap:6px}}
+
+/* UI themes: presentation-only overrides; application logic and task controls remain unchanged */
+.ui-switcher{padding:12px!important}
+.ui-switcher-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ui-switcher-head strong{display:block;font-size:14px}
+.ui-switcher-head small{display:block;color:var(--muted,#94a3b8);font-size:11px;margin-top:4px}
+#uiTheme{min-width:165px;max-width:100%;padding:9px 10px;border-radius:10px;border:1px solid var(--ui-border,#334155);background:var(--ui-input,#0f172a);color:var(--ui-text,#e5e7eb);font:inherit}
+.ui-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:11px}
+.ui-preset{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0;padding:8px!important;border:1px solid var(--ui-border,#334155)!important;border-radius:10px!important;background:var(--ui-card,#0f172a)!important;color:var(--ui-text,#e5e7eb)!important;text-align:left}
+.ui-preset b{font-size:11px}.ui-preset small{font-size:10px;color:var(--muted,#94a3b8);white-space:normal}
+.ui-preset.active{outline:2px solid var(--ui-accent,#648cff);outline-offset:1px}
+.ui-swatch{width:100%;height:16px;border-radius:5px;border:1px solid #64748b55}
+.sw-midnight{background:linear-gradient(90deg,#020617 50%,#1e293b 50%)}.sw-light{background:linear-gradient(90deg,#f8fafc 50%,#e2e8f0 50%)}
+.sw-ocean{background:linear-gradient(90deg,#082f49 50%,#075985 50%)}.sw-emerald{background:linear-gradient(90deg,#052e2b 50%,#065f46 50%)}
+.sw-compact{background:linear-gradient(90deg,#111827 50%,#374151 50%)}
+.sw-amoled{background:linear-gradient(90deg,#000 50%,#171717 50%)}.sw-purple{background:linear-gradient(90deg,#2e1065 50%,#6d28d9 50%)}
+.sw-crimson{background:linear-gradient(90deg,#450a0a 50%,#b91c1c 50%)}.sw-sunset{background:linear-gradient(90deg,#431407 50%,#ea580c 50%)}
+.sw-rose{background:linear-gradient(90deg,#500724 50%,#be185d 50%)}.sw-slate{background:linear-gradient(90deg,#0f172a 50%,#475569 50%)}
+body[data-ui="amoled"]{background:#000!important;color:#f5f5f5!important;--ui-text:#f5f5f5;--ui-muted:#a3a3a3;--ui-border:#333;--ui-input:#090909;--ui-card:#090909;--ui-accent:#a3a3a3}
+body[data-ui="amoled"] .panel,body[data-ui="amoled"] .section-card{background:#080808!important;color:#f5f5f5!important;border-color:#262626!important;box-shadow:none!important}
+body[data-ui="amoled"] input,body[data-ui="amoled"] textarea,body[data-ui="amoled"] select,body[data-ui="amoled"] .tab-btn,body[data-ui="amoled"] .ui-preset{background:#050505!important;color:#f5f5f5!important;border-color:#333!important}
+body[data-ui="purple"]{background:radial-gradient(circle at 15% 0%,#581c87 0,#2e1065 45%,#10051f 100%)!important;color:#f3e8ff!important;--ui-accent:#c084fc}
+body[data-ui="purple"] .panel,body[data-ui="purple"] .section-card{background:rgba(46,16,101,.9)!important;border-color:#6d28d9!important}
+body[data-ui="purple"] input,body[data-ui="purple"] textarea,body[data-ui="purple"] select{border-color:#7e22ce!important}
+body[data-ui="purple"] .tab-btn.active,body[data-ui="purple"] button.primary{background:#7e22ce!important}
+body[data-ui="crimson"]{background:radial-gradient(circle at 15% 0%,#991b1b 0,#450a0a 48%,#190505 100%)!important;color:#fee2e2!important;--ui-accent:#f87171}
+body[data-ui="crimson"] .panel,body[data-ui="crimson"] .section-card{background:rgba(69,10,10,.92)!important;border-color:#991b1b!important}
+body[data-ui="crimson"] input,body[data-ui="crimson"] textarea,body[data-ui="crimson"] select{border-color:#b91c1c!important}
+body[data-ui="crimson"] .tab-btn.active,body[data-ui="crimson"] button.primary{background:#b91c1c!important}
+body[data-ui="sunset"]{background:radial-gradient(circle at 15% 0%,#c2410c 0,#431407 48%,#1c0903 100%)!important;color:#ffedd5!important;--ui-accent:#fb923c}
+body[data-ui="sunset"] .panel,body[data-ui="sunset"] .section-card{background:rgba(67,20,7,.92)!important;border-color:#9a3412!important}
+body[data-ui="sunset"] input,body[data-ui="sunset"] textarea,body[data-ui="sunset"] select{border-color:#c2410c!important}
+body[data-ui="sunset"] .tab-btn.active,body[data-ui="sunset"] button.primary{background:#c2410c!important}
+body[data-ui="rose"]{background:radial-gradient(circle at 15% 0%,#9d174d 0,#500724 48%,#1f0611 100%)!important;color:#fce7f3!important;--ui-accent:#f472b6}
+body[data-ui="rose"] .panel,body[data-ui="rose"] .section-card{background:rgba(80,7,36,.92)!important;border-color:#9d174d!important}
+body[data-ui="rose"] input,body[data-ui="rose"] textarea,body[data-ui="rose"] select{border-color:#be185d!important}
+body[data-ui="rose"] .tab-btn.active,body[data-ui="rose"] button.primary{background:#be185d!important}
+body[data-ui="slate"]{background:radial-gradient(circle at 15% 0%,#334155 0,#0f172a 48%,#070b12 100%)!important;color:#e2e8f0!important;--ui-accent:#94a3b8}
+body[data-ui="slate"] .panel,body[data-ui="slate"] .section-card{background:rgba(15,23,42,.92)!important;border-color:#475569!important}
+body[data-ui="slate"] input,body[data-ui="slate"] textarea,body[data-ui="slate"] select{border-color:#64748b!important}
+body[data-ui="slate"] .tab-btn.active,body[data-ui="slate"] button.primary{background:#475569!important}
+
+body[data-ui="light"]{background:#eef2f7!important;color:#172033!important;--ui-text:#172033;--ui-muted:#64748b;--ui-border:#cbd5e1;--ui-input:#fff;--ui-card:#fff;--ui-accent:#2563eb}
+body[data-ui="light"] .panel,body[data-ui="light"] .section-card{background:#fff!important;color:#172033!important;border-color:#d7deea!important;box-shadow:0 3px 12px #0f172a0c!important}
+body[data-ui="light"] input,body[data-ui="light"] textarea,body[data-ui="light"] select{background:#fff!important;color:#172033!important;border-color:#cbd5e1!important}
+body[data-ui="light"] label,body[data-ui="light"] .section-heading small,body[data-ui="light"] .api,body[data-ui="light"] .brand-sub{color:#64748b!important}
+body[data-ui="light"] .tab-btn,body[data-ui="light"] .ui-preset{background:#f8fafc!important;color:#172033!important;border-color:#cbd5e1!important}
+body[data-ui="light"] .ui-switcher-head small,body[data-ui="light"] .ui-preset small{color:#64748b!important}
+body[data-ui="ocean"]{background:radial-gradient(circle at 15% 0%,#075985 0,#082f49 45%,#041725 100%)!important;color:#e0f2fe}
+body[data-ui="ocean"] .panel,body[data-ui="ocean"] .section-card{background:rgba(8,47,73,.9)!important;border-color:#155e75!important}
+body[data-ui="ocean"] input,body[data-ui="ocean"] textarea,body[data-ui="ocean"] select{border-color:#0e7490!important}
+body[data-ui="ocean"] .tab-btn.active,body[data-ui="ocean"] button.primary{background:#0369a1!important}
+body[data-ui="emerald"]{background:radial-gradient(circle at 15% 0%,#065f46 0,#052e2b 42%,#02201d 100%)!important;color:#d1fae5}
+body[data-ui="emerald"] .panel,body[data-ui="emerald"] .section-card{background:rgba(6,46,39,.92)!important;border-color:#166534!important}
+body[data-ui="emerald"] input,body[data-ui="emerald"] textarea,body[data-ui="emerald"] select{border-color:#15803d!important}
+body[data-ui="emerald"] .tab-btn.active,body[data-ui="emerald"] button.primary{background:#047857!important}
+body[data-ui="compact"] .wrap{max-width:1100px;padding:6px}
+body[data-ui="compact"] .panel,body[data-ui="compact"] .section-card{padding:8px!important;margin-bottom:7px!important;border-radius:10px!important}
+body[data-ui="compact"] .grid{gap:5px}
+body[data-ui="compact"] input,body[data-ui="compact"] select,body[data-ui="compact"] textarea,body[data-ui="compact"] button{padding-top:6px!important;padding-bottom:6px!important}
+body[data-ui="compact"] .ui-presets{gap:4px}
+@media(max-width:520px){.ui-presets{grid-template-columns:repeat(3,minmax(0,1fr))}.ui-switcher-head{align-items:stretch}.ui-switcher-head #uiTheme{width:100%}}
+
 </style>
 </head>
 <body>
@@ -139,6 +202,38 @@ html{background:var(--bg)!important}body{font-family:Inter,ui-sans-serif,system-
     <button id="tabDuel" class="tab-btn" role="tab" aria-selected="false">DUEL</button>
     <button id="tabFlat" class="tab-btn" role="tab" aria-selected="false">FLAT</button>
   </div>
+
+
+  <section class="ui-switcher panel" aria-label="Pengaturan tampilan">
+    <div class="ui-switcher-head"><div><strong>🎨 Ganti UI</strong><small>Pilih tampilan — hanya mengubah visual, bukan fungsi script</small></div>
+      <select id="uiTheme" aria-label="Pilih tampilan">
+        <option value="midnight">Midnight — Gelap</option>
+        <option value="light">Light — Terang</option>
+        <option value="ocean">Ocean — Biru</option>
+        <option value="emerald">Emerald — Hijau</option>
+        <option value="compact">Compact — Ringkas</option>
+         <option value="amoled">AMOLED — Hitam pekat</option>
+         <option value="purple">Purple — Ungu</option>
+         <option value="crimson">Crimson — Merah</option>
+         <option value="sunset">Sunset — Jingga</option>
+         <option value="rose">Rose — Merah muda</option>
+         <option value="slate">Slate — Abu-abu</option>
+      </select>
+    </div>
+    <div class="ui-presets" role="group" aria-label="Pratinjau tema">
+      <button type="button" class="ui-preset" data-ui-choice="midnight"><span class="ui-swatch sw-midnight"></span><b>Midnight</b><small>Kontras gelap</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="light"><span class="ui-swatch sw-light"></span><b>Light</b><small>Terang bersih</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="ocean"><span class="ui-swatch sw-ocean"></span><b>Ocean</b><small>Biru dingin</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="emerald"><span class="ui-swatch sw-emerald"></span><b>Emerald</b><small>Hijau lembut</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="compact"><span class="ui-swatch sw-compact"></span><b>Compact</b><small>Lebih ringkas</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="amoled"><span class="ui-swatch sw-amoled"></span><b>AMOLED</b><small>Hitam pekat</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="purple"><span class="ui-swatch sw-purple"></span><b>Purple</b><small>Ungu modern</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="crimson"><span class="ui-swatch sw-crimson"></span><b>Crimson</b><small>Merah tegas</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="sunset"><span class="ui-swatch sw-sunset"></span><b>Sunset</b><small>Jingga hangat</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="rose"><span class="ui-swatch sw-rose"></span><b>Rose</b><small>Merah muda</small></button>
+      <button type="button" class="ui-preset" data-ui-choice="slate"><span class="ui-swatch sw-slate"></span><b>Slate</b><small>Abu-abu netral</small></button>
+    </div>
+  </section>
 
   <section id="panelSetting" class="tab-panel active" role="tabpanel">
   <div class="panel section-card login-troop-card">
@@ -1479,6 +1574,32 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
   }
 });
 document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
+
+/* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
+(function(){
+  const select=document.getElementById("uiTheme");
+  if(!select)return;
+  const valid=["midnight","light","ocean","emerald","compact","amoled","purple","crimson","sunset","rose","slate"];
+  function setUi(name){
+    if(!valid.includes(name))name="midnight";
+    document.body.dataset.ui=name==="midnight"?"midnight":name;
+    select.value=name;
+    document.querySelectorAll("[data-ui-choice]").forEach(btn=>{
+      const active=btn.dataset.uiChoice===name;
+      btn.classList.toggle("active",active);
+      btn.setAttribute("aria-pressed",active?"true":"false");
+    });
+    try{localStorage.setItem("migsock-ui-theme",name)}catch(_e){}
+  }
+  select.addEventListener("change",()=>setUi(select.value));
+  document.querySelectorAll("[data-ui-choice]").forEach(btn=>{
+    btn.addEventListener("click",()=>setUi(btn.dataset.uiChoice));
+  });
+  let saved="midnight";
+  try{saved=localStorage.getItem("migsock-ui-theme")||"midnight"}catch(_e){}
+  setUi(saved);
+})();
+
 </script>
 </body>
 </html>
