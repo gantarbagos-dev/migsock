@@ -323,7 +323,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
         <div id="userList" class="user-box" aria-label="List username"></div>
       </div>
       <div>
-        <div class="listtitle"><span>TARGET</span><span style="display:flex;align-items:center;gap:6px"><span id="targetCount">0</span><button id="suicideToggle" type="button" onclick="toggleSuicide()" class="suicide-toggle suicide-off" title="Suicide OFF" aria-pressed="false" aria-label="Suicide OFF">SUICIDE OFF</button><button id="clearTarget" class="danger trash-btn" title="Hapus semua username TARGET" aria-label="Hapus semua username TARGET">🗑️</button></span></div>
+        <div class="listtitle"><span>TARGET</span><span style="display:flex;align-items:center;gap:6px"><span id="targetCount">0</span><button id="clearTarget" class="danger trash-btn" title="Hapus semua username TARGET" aria-label="Hapus semua username TARGET">🗑️</button></span></div>
         <div id="targetList" aria-label="List target room"></div>
       </div>
     </div>
@@ -351,7 +351,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
         <input id="loadSetFile" type="file" accept=".json,application/json" style="display:none">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px"><button id="saveSet" class="primary">SAVE SET</button><button id="loadSet">LOAD SET</button></div>
       </div>
-      <div style="display:flex;flex-direction:column;gap:6px"><button id="kickAll" class="danger kickall-side">KICK ALL</button></div>
+      <div style="display:flex;flex-direction:column;gap:6px"><button id="suicideToggle" type="button" onclick="toggleSuicide()" class="suicide-toggle suicide-off" title="Suicide OFF; 0/3 username" aria-pressed="false" aria-label="Suicide OFF; 0 of 3 usernames processed">☠️ 0/3</button><button id="kickAll" class="danger kickall-side">KICK ALL</button></div>
     </div>
   </div>
 
@@ -464,10 +464,11 @@ function resetSuicideFeature(reason="reset"){
 }
 function renderSuicideToggle(){
   const button=document.getElementById("suicideToggle");if(!button)return;
-  button.textContent=suicideEnabled?"SUICIDE ON":"SUICIDE OFF";
-  button.title=suicideEnabled?"Suicide ON":"Suicide OFF";
+  const processed=suicideAffectedUsernames.size;
+  button.textContent=`☠️ ${processed}/3`;
+  button.title=`Suicide ${suicideEnabled?"ON":"OFF"}; ${processed} dari 3 username unik diproses`;
   button.setAttribute("aria-pressed",suicideEnabled?"true":"false");
-  button.setAttribute("aria-label",suicideEnabled?"Suicide ON":"Suicide OFF");
+  button.setAttribute("aria-label",`Suicide ${suicideEnabled?"ON":"OFF"}; ${processed} dari 3 username unik diproses`);
   button.classList.toggle("suicide-on",suicideEnabled);button.classList.toggle("suicide-off",!suicideEnabled);
 }
 function toggleSuicide(){
@@ -504,7 +505,7 @@ function triggerSuicideFromVote(msg){
   }
   log(0,`SUICIDE: vote target ${matchedUsername}; dikirim melalui ${sent} WS aktif`);
   if(!sent)suicideTriggeredKeys.delete(key);
-  else suicideAffectedUsernames.add(usernameKey);
+  else {suicideAffectedUsernames.add(usernameKey);renderSuicideToggle();}
 }
 
 function dispatchSocketEvent(m,i){
