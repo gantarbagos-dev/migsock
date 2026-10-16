@@ -24,7 +24,6 @@ ACTIVE_UPSTREAM = {}
 # Per-login-session upstream registry. A browser session owns only its own WS1-WS10.
 SESSION_UPSTREAM = {}
 WS_SESSION = {}
-SOCKET_LOCKS = {}
 KICK_RATE_LOCKS = {}
 KICK_RATE_STATE = {}
 SESSION_BROWSERS = {}
@@ -223,7 +222,6 @@ def register_socket(session_id, username, ws):
     WS_SESSION[id(ws)] = session_id
     # Keep a legacy global registry only for diagnostics/protection; kick jobs never use it.
     ACTIVE_UPSTREAM[(session_id, key)] = ws
-    SOCKET_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_STATE.setdefault(id(ws), {"timestamps": deque()})
 
@@ -246,7 +244,6 @@ def unregister_socket(session_id, username, ws):
         if current is ws:
             ACTIVE_UPSTREAM.pop(key, None)
     WS_SESSION.pop(id(ws), None)
-    SOCKET_LOCKS.pop(id(ws), None)
     KICK_RATE_LOCKS.pop(id(ws), None)
     KICK_RATE_STATE.pop(id(ws), None)
 
@@ -273,20 +270,6 @@ def all_active_ws_usernames(exclude_session=None):
                 names.add(str(name).strip().casefold())
     return names
 
-
-async def send_upstream(ws, payload):
-    """Send one upstream payload without allowing a stalled socket to freeze KICKALL."""
-    lock = SOCKET_LOCKS.setdefault(id(ws), asyncio.Lock())
-    try:
-        async with asyncio.timeout(KICK_SEND_TIMEOUT):
-            async with lock:
-                if ws.closed:
-                    return False
-                await ws.send_json(payload)
-                return True
-    except (asyncio.TimeoutError, ConnectionError, OSError):
-        print(f"[KICK SEND TIMEOUT/ERROR] ws={id(ws)}", flush=True)
-        return False
 
 async def send_kick(ws, room, target, max_per_second=None):
     """Send one room.kick under a strict per-upstream-WebSocket sliding window.
@@ -326,11 +309,20 @@ async def send_kick(ws, room, target, max_per_second=None):
             wait_for = max(0.001, timestamps[0] + 1.0 - now)
         await asyncio.sleep(wait_for)
 
-    return await send_upstream(ws, {
+    payload = {
         "type": "room.kick",
         "room": room,
         "target_username": target,
-    })
+    }
+    try:
+        async with asyncio.timeout(KICK_SEND_TIMEOUT):
+            if ws.closed:
+                return False
+            await ws.send_json(payload)
+            return True
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        print(f"[KICK SEND TIMEOUT/ERROR] ws={wsid}", flush=True)
+        return False
 
 async def publish_browser_event(session_id, payload):
     """Queue browser UI updates without blocking the Kick engine.
