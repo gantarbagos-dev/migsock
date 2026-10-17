@@ -538,7 +538,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         "events": {t.casefold(): asyncio.Event() for t in targets},
         "replacement_tasks": set(),
         "replacement_dispatched": 0,
-        "send_count": 0,
         "stopped": False,
         "lock": asyncio.Lock(),
     }
@@ -591,15 +590,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             if socket_interval and (index + 1) % 2 == 0 and index + 1 < len(active):
                 await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        sent_count = sum(1 for result in results if result is True)
-        if sent_count:
-            replacement_state["send_count"] += sent_count
-            await publish_browser_event(session_id, {
-                "type": "kick.send.count",
-                "jobId": job_id,
-                "count": replacement_state["send_count"],
-            })
-        return sent_count
+        return sum(1 for result in results if result is True)
 
     async def dispatch_replacement(kicked_target):
         """Directly fan out a replacement target to all active sockets."""
