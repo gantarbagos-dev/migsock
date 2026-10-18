@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from collections import deque
 import uuid
@@ -817,7 +818,7 @@ async def auth_me(request):
 
 
 UPDATE_DIR = ROOT.parent / "updates"
-UPDATE_MAX_BYTES = 100 * 1024 * 1024
+UPDATE_MAX_BYTES = 500 * 1024 * 1024
 
 
 def _latest_update_file():
@@ -828,11 +829,25 @@ def _latest_update_file():
         return None
 
 
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 async def update_check(request):
     update_file = _latest_update_file()
     if update_file is None:
-        return web.json_response({"ok": True, "available": False})
-    return web.json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "url": "/api/update/download"})
+        return web.json_response({"ok": True, "available": False, "up_to_date": True})
+    digest = _sha256_file(update_file)
+    # Native app/WebView may pass its installed APK SHA-256 as installedSha256.
+    # A normal browser page cannot inspect the APK installed on the device.
+    installed_hash = str(request.query.get("installedSha256", "")).strip().lower()
+    if installed_hash and re.fullmatch(r"[a-f0-9]{64}", installed_hash) and installed_hash == digest:
+        return web.json_response({"ok": True, "available": False, "up_to_date": True, "message": "Your software already uptodate", "sha256": digest})
+    return web.json_response({"ok": True, "available": True, "up_to_date": False, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": digest, "url": "/api/update/download"})
 
 
 async def update_download(request):
@@ -857,6 +872,7 @@ async def admin_update_upload(request):
     UPDATE_DIR.mkdir(parents=True, exist_ok=True)
     temp_path = UPDATE_DIR / (".upload-" + uuid.uuid4().hex)
     total = 0
+    digest = hashlib.sha256()
     try:
         with temp_path.open("wb") as out:
             while True:
@@ -866,18 +882,25 @@ async def admin_update_upload(request):
                 total += len(chunk)
                 if total > UPDATE_MAX_BYTES:
                     temp_path.unlink(missing_ok=True)
-                    return web.json_response({"ok": False, "error": "Ukuran file maksimal 100 MB"}, status=413)
+                    return web.json_response({"ok": False, "error": "Ukuran file maksimal 500 MB"}, status=413)
+                digest.update(chunk)
                 out.write(chunk)
         if total == 0:
             temp_path.unlink(missing_ok=True)
             return web.json_response({"ok": False, "error": "File kosong tidak dapat diupload"}, status=400)
+        file_hash = digest.hexdigest()
+        # If the exact same file is already published, keep it and report unchanged.
+        current = _latest_update_file()
+        if current is not None and current.stat().st_size == total and _sha256_file(current) == file_hash:
+            temp_path.unlink(missing_ok=True)
+            return web.json_response({"ok": True, "unchanged": True, "filename": current.name, "size": total, "sha256": file_hash})
         # Keep only one published update file so Check Update has one clear result.
         for old in UPDATE_DIR.iterdir():
             if old.is_file() and not old.name.startswith("."):
                 old.unlink(missing_ok=True)
         target = UPDATE_DIR / filename
         temp_path.replace(target)
-        return web.json_response({"ok": True, "filename": filename, "size": total})
+        return web.json_response({"ok": True, "filename": filename, "size": total, "sha256": file_hash})
     except Exception:
         temp_path.unlink(missing_ok=True)
         raise
@@ -896,7 +919,7 @@ async def admin_update_status(request):
     update_file = _latest_update_file()
     if update_file is None:
         return web.json_response({"ok": True, "available": False})
-    return web.json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size})
+    return web.json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": _sha256_file(update_file)})
 
 
 @require_admin
@@ -1140,7 +1163,7 @@ async def health(request):
 
 init_auth_db()
 
-app = web.Application(client_max_size=UPDATE_MAX_BYTES + 2 * 1024 * 1024)
+app = web.Application(client_max_size=UPDATE_MAX_BYTES + 16 * 1024 * 1024)
 app.router.add_get("/", index)
 app.router.add_get("/login", login_page)
 app.router.add_get("/app", require_auth(app_page))
