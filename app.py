@@ -2,6 +2,8 @@ import asyncio
 import os
 from collections import deque
 import uuid
+import re
+import time
 from functools import wraps
 from pathlib import Path
 
@@ -814,6 +816,89 @@ async def auth_me(request):
     return web.json_response({"ok": True, "authenticated": True, "user": user})
 
 
+UPDATE_DIR = ROOT.parent / "updates"
+UPDATE_MAX_BYTES = 100 * 1024 * 1024
+
+
+def _latest_update_file():
+    try:
+        files = [p for p in UPDATE_DIR.iterdir() if p.is_file() and not p.name.startswith(".")]
+        return max(files, key=lambda p: p.stat().st_mtime) if files else None
+    except FileNotFoundError:
+        return None
+
+
+async def update_check(request):
+    update_file = _latest_update_file()
+    if update_file is None:
+        return web.json_response({"ok": True, "available": False})
+    return web.json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "url": "/api/update/download"})
+
+
+async def update_download(request):
+    update_file = _latest_update_file()
+    if update_file is None:
+        return web.json_response({"ok": True, "available": False, "message": "Your software already uptodate"}, status=404)
+    return web.FileResponse(update_file, headers={"Content-Disposition": f'attachment; filename="{update_file.name}"', "Cache-Control": "no-store"})
+
+
+@require_admin
+async def admin_update_upload(request):
+    reader = await request.multipart()
+    field = await reader.next()
+    while field is not None and field.name != "file":
+        field = await reader.next()
+    if field is None or not field.filename:
+        return web.json_response({"ok": False, "error": "Pilih file update terlebih dahulu"}, status=400)
+    original = Path(field.filename.replace("\\", "/")).name
+    filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original).strip(" .")[:180]
+    if not filename or filename in {".", ".."}:
+        filename = "migsock-update.bin"
+    UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = UPDATE_DIR / (".upload-" + uuid.uuid4().hex)
+    total = 0
+    try:
+        with temp_path.open("wb") as out:
+            while True:
+                chunk = await field.read_chunk(size=1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > UPDATE_MAX_BYTES:
+                    temp_path.unlink(missing_ok=True)
+                    return web.json_response({"ok": False, "error": "Ukuran file maksimal 100 MB"}, status=413)
+                out.write(chunk)
+        if total == 0:
+            temp_path.unlink(missing_ok=True)
+            return web.json_response({"ok": False, "error": "File kosong tidak dapat diupload"}, status=400)
+        # Keep only one published update file so Check Update has one clear result.
+        for old in UPDATE_DIR.iterdir():
+            if old.is_file() and not old.name.startswith("."):
+                old.unlink(missing_ok=True)
+        target = UPDATE_DIR / filename
+        temp_path.replace(target)
+        return web.json_response({"ok": True, "filename": filename, "size": total})
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+@require_admin
+async def admin_update_delete(request):
+    update_file = _latest_update_file()
+    if update_file is not None:
+        update_file.unlink(missing_ok=True)
+    return web.json_response({"ok": True, "deleted": update_file is not None})
+
+
+@require_admin
+async def admin_update_status(request):
+    update_file = _latest_update_file()
+    if update_file is None:
+        return web.json_response({"ok": True, "available": False})
+    return web.json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size})
+
+
 @require_admin
 async def admin_change_password(request):
     try:
@@ -1055,7 +1140,7 @@ async def health(request):
 
 init_auth_db()
 
-app = web.Application()
+app = web.Application(client_max_size=UPDATE_MAX_BYTES + 2 * 1024 * 1024)
 app.router.add_get("/", index)
 app.router.add_get("/login", login_page)
 app.router.add_get("/app", require_auth(app_page))
@@ -1063,6 +1148,11 @@ app.router.add_get("/admin", require_admin(admin_page))
 app.router.add_post("/api/auth/login", auth_login)
 app.router.add_post("/api/auth/logout", require_auth(auth_logout))
 app.router.add_get("/api/auth/me", auth_me)
+app.router.add_get("/api/update/check", update_check)
+app.router.add_get("/api/update/download", update_download)
+app.router.add_get("/api/admin/update", admin_update_status)
+app.router.add_post("/api/admin/update", admin_update_upload)
+app.router.add_delete("/api/admin/update", admin_update_delete)
 app.router.add_get("/api/admin/users", admin_users)
 app.router.add_get("/api/admin/session-settings", admin_session_settings)
 app.router.add_post("/api/admin/session-settings", admin_session_settings)
