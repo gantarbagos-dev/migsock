@@ -854,26 +854,29 @@ async def update_download(request):
     update_file = _latest_update_file()
     if update_file is None:
         return web.json_response({"ok": True, "available": False, "message": "Your software already uptodate"}, status=404)
-    return web.FileResponse(update_file, headers={"Content-Disposition": f'attachment; filename="{update_file.name}"', "Cache-Control": "no-store"})
+    return web.FileResponse(update_file, headers={"Content-Disposition": f'attachment; filename="{update_file.name}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @require_admin
 async def admin_update_upload(request):
-    reader = await request.multipart()
-    field = await reader.next()
-    while field is not None and field.name != "file":
-        field = await reader.next()
-    if field is None or not field.filename:
-        return web.json_response({"ok": False, "error": "Pilih file update terlebih dahulu"}, status=400)
-    original = Path(field.filename.replace("\\", "/")).name
-    filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original).strip(" .")[:180]
-    if not filename or filename in {".", ".."}:
-        filename = "migsock-update.bin"
-    UPDATE_DIR.mkdir(parents=True, exist_ok=True)
-    temp_path = UPDATE_DIR / (".upload-" + uuid.uuid4().hex)
-    total = 0
-    digest = hashlib.sha256()
+    """Receive a large APK/update file and always return a useful JSON error."""
+    temp_path = None
     try:
+        reader = await request.multipart()
+        field = await reader.next()
+        while field is not None and field.name != "file":
+            field = await reader.next()
+        if field is None or not field.filename:
+            return web.json_response({"ok": False, "error": "Pilih file APK/update terlebih dahulu"}, status=400)
+
+        original = Path(field.filename.replace("\\", "/")).name
+        filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original).strip(" .")[:180]
+        if not filename or filename in {".", ".."}:
+            filename = "migsock-update.apk"
+        UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+        temp_path = UPDATE_DIR / (".upload-" + uuid.uuid4().hex)
+        total = 0
+        digest = hashlib.sha256()
         with temp_path.open("wb") as out:
             while True:
                 chunk = await field.read_chunk(size=1024 * 1024)
@@ -885,25 +888,32 @@ async def admin_update_upload(request):
                     return web.json_response({"ok": False, "error": "Ukuran file maksimal 500 MB"}, status=413)
                 digest.update(chunk)
                 out.write(chunk)
+
         if total == 0:
             temp_path.unlink(missing_ok=True)
-            return web.json_response({"ok": False, "error": "File kosong tidak dapat diupload"}, status=400)
+            return web.json_response({"ok": False, "error": "File kosong atau gagal dibaca browser"}, status=400)
+
         file_hash = digest.hexdigest()
-        # If the exact same file is already published, keep it and report unchanged.
         current = _latest_update_file()
         if current is not None and current.stat().st_size == total and _sha256_file(current) == file_hash:
             temp_path.unlink(missing_ok=True)
             return web.json_response({"ok": True, "unchanged": True, "filename": current.name, "size": total, "sha256": file_hash})
-        # Keep only one published update file so Check Update has one clear result.
-        for old in UPDATE_DIR.iterdir():
-            if old.is_file() and not old.name.startswith("."):
-                old.unlink(missing_ok=True)
+
+        # Publish atomically: don't remove the old update until the new file is fully received.
         target = UPDATE_DIR / filename
+        if current is not None and current != target:
+            current.unlink(missing_ok=True)
         temp_path.replace(target)
+        temp_path = None
         return web.json_response({"ok": True, "filename": filename, "size": total, "sha256": file_hash})
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
+    except web.HTTPRequestEntityTooLarge:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        return web.json_response({"ok": False, "error": "File terlalu besar. Batas unggahan 500 MB; periksa juga batas upload reverse proxy."}, status=413)
+    except Exception as e:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        return web.json_response({"ok": False, "error": f"Upload gagal: {type(e).__name__}: {str(e)[:240]}"}, status=500)
 
 
 @require_admin
