@@ -28,11 +28,13 @@ body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-ser
     <label>Password</label><input id="password" type="password" autocomplete="current-password" required>
     <button id="submit" type="submit">LOGIN</button>
   </form>
-  <div class="hint">Akses hanya untuk akun yang telah didaftarkan.</div>
-  <a class="admin-link" href="/admin">Admin Panel</a>
+  <button id="checkUpdate" type="button" style="margin-top:12px;background:linear-gradient(120deg,#0f9f76,#16b8a6)!important">CHECK UPDATE</button>
+  <div id="updateMessage" class="hint" role="status" aria-live="polite" style="margin-top:10px;display:none"></div>
 </div>
 <script>
 const form=document.getElementById('loginForm'),err=document.getElementById('error'),btn=document.getElementById('submit');
+const updateBtn=document.getElementById('checkUpdate'),updateMessage=document.getElementById('updateMessage');
+updateBtn.addEventListener('click',async()=>{updateBtn.disabled=true;updateBtn.textContent='CHECKING...';updateMessage.style.display='block';updateMessage.textContent='Memeriksa update...';try{const r=await fetch('/api/update/check',{cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.error||'Gagal memeriksa update');if(!d.available){updateMessage.textContent='Your software already uptodate';return;}updateMessage.textContent='Update ditemukan: '+d.filename+' — download dimulai...';const a=document.createElement('a');a.href='/api/update/download';a.download=d.filename||'';document.body.appendChild(a);a.click();a.remove();}catch(e){updateMessage.textContent=e.message||'Gagal memeriksa update';}finally{updateBtn.disabled=false;updateBtn.textContent='CHECK UPDATE';}});
 // Jika cookie sesi masih sah, langsung buka aplikasi tanpa meminta username/password lagi.
 (async()=>{try{const r=await fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store'});if(r.ok){const d=await r.json();if(d.ok&&d.authenticated){location.replace(d.user?.role==='admin'?'/admin':'/app');return}}}catch(_){} })();
 function randomToken(bytes=32){const a=new Uint8Array(bytes);crypto.getRandomValues(a);return Array.from(a,b=>b.toString(16).padStart(2,'0')).join('')}
