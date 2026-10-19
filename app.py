@@ -796,10 +796,18 @@ async def auth_login(request):
             return web.json_response({"ok": False, "error": "Kredensial perangkat tidak valid. Hapus data perangkat lokal lalu ajukan pendaftaran baru."}, status=403)
     token = create_session(user, device_id=device_id)
     response = web.json_response({"ok": True, "user": user})
-    response.set_cookie(
-        SESSION_COOKIE, token, max_age=get_session_ttl(), httponly=True,
-        samesite="Lax", secure=request.scheme == "https", path="/"
-    )
+    # Default: do not persist the login cookie beyond the browser session.
+    # When "Simpan sesi login" is checked, persist it for the configured TTL.
+    remember_session = data.get("rememberSession") is True
+    cookie_options = {
+        "httponly": True,
+        "samesite": "Lax",
+        "secure": request.scheme == "https",
+        "path": "/",
+    }
+    if remember_session:
+        cookie_options["max_age"] = get_session_ttl()
+    response.set_cookie(SESSION_COOKIE, token, **cookie_options)
     return response
 
 
