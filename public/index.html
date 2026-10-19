@@ -241,6 +241,11 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
  .kick-layout-option-b .kick-action-grid #kickAll{height:39px!important;min-height:39px!important;max-height:39px!important;padding:4px 2px!important;font-size:8px!important;gap:3px!important;}
  .kick-layout-option-b .kick-btn-icon{font-size:13px!important;}
 }
+
+/* Header logout icon replaces the READY chip; action uses the existing logout-all flow. */
+.header-logout{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:42px;height:42px;min-height:42px;padding:9px;border:1px solid rgba(248,113,113,.35)!important;border-radius:13px;background:linear-gradient(145deg,rgba(190,24,93,.95),rgba(185,28,28,.95))!important;color:#fff!important;box-shadow:0 5px 16px rgba(185,28,28,.22)!important}
+.header-logout svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.header-logout:focus-visible{outline:2px solid #fca5a5;outline-offset:3px}
 </style>
 
 <style id="suicide-toggle-style">
@@ -369,7 +374,9 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
         <div class="brand-sub">MIGSOCK DUEL V2</div>
       </div>
     </div>
-    <div class="hero-chip"><span class="hero-dot"></span><span>READY</span></div>
+    <button type="button" id="headerLogout" class="header-logout" title="Logout dari panel" aria-label="Logout dari panel">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 17l5-5-5-5M15 12H3M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6" /></svg>
+    </button>
   </div>
 
   <div class="tabs" role="tablist" aria-label="Navigasi">
@@ -1842,7 +1849,18 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
     e.target.value="";
   }
 });
-document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
+document.getElementById("headerLogout").onclick=async function(){
+  const button=this;
+  button.disabled=true;
+  try {
+    const response=await fetch("/api/auth/logout",{method:"POST",credentials:"same-origin"});
+    if(!response.ok) throw new Error("Logout panel gagal ("+response.status+")");
+    location.href="/login";
+  } catch(error) {
+    button.disabled=false;
+    alert(error.message||"Logout panel gagal. Silakan coba lagi.");
+  }
+};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
 
 /* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
 (function(){
