@@ -18,6 +18,7 @@ label{display:block;margin:0 0 8px;color:#8eb9dd;font-size:11px;font-weight:800;
 /* Login visual refresh; authentication logic unchanged */
 body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif!important;background:radial-gradient(ellipse at 15% 0%,rgba(70,94,230,.28),transparent 43%),radial-gradient(ellipse at 100% 75%,rgba(168,85,247,.15),transparent 34%),#070b18!important;padding:16px!important}.card{width:min(430px,100%)!important;padding:clamp(22px,6vw,32px)!important;border-radius:26px!important;border:1px solid rgba(118,145,255,.27)!important;background:linear-gradient(145deg,rgba(19,28,57,.96),rgba(8,13,30,.97))!important;box-shadow:0 24px 65px rgba(0,0,0,.42)!important}.brand img{width:112px!important;height:84px!important;object-fit:contain!important;display:block!important;margin:0 auto 8px!important;padding:5px!important;border-radius:18px!important;background:linear-gradient(145deg,rgba(79,124,255,.15),rgba(40,224,232,.06))!important}.brand h1{font-size:28px!important;letter-spacing:1.6px!important}.brand small{font-size:10px!important;letter-spacing:1.2px!important}input{min-height:52px!important;border-radius:14px!important;border:1px solid rgba(124,153,218,.25)!important;background:rgba(5,10,25,.82)!important;font-size:15px!important}button{min-height:52px!important;border-radius:14px!important;background:linear-gradient(120deg,#2879ff,#7355ff)!important;color:white!important;font-weight:850!important;box-shadow:0 8px 22px rgba(79,124,255,.23)!important}.admin-link{border-radius:12px!important}@media(max-width:380px){.card{padding:21px!important;border-radius:21px!important}}
 
+.remember-option{display:flex;align-items:center;gap:10px;margin:0 0 16px;color:#c1cce7;font-size:12px;font-weight:700;letter-spacing:.2px;text-transform:none;cursor:pointer}.remember-option input{width:17px;height:17px;min-height:17px;margin:0;accent-color:#477bff;box-shadow:none!important;flex:0 0 auto}
 </style>
 </head><body>
 <div class="card">
@@ -26,6 +27,7 @@ body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-ser
   <form id="loginForm">
     <label>Username</label><input id="username" autocomplete="username" autocapitalize="none" required>
     <label>Password</label><input id="password" type="password" autocomplete="current-password" required>
+    <label class="remember-option"><input id="rememberSession" type="checkbox"> Simpan sesi login</label>
     <button id="submit" type="submit">LOGIN</button>
   </form>
   <button id="checkUpdate" type="button" style="margin-top:12px;background:linear-gradient(120deg,#0f9f76,#16b8a6)!important">CHECK UPDATE</button>
@@ -45,6 +47,6 @@ function deviceIdentity(usernameValue){
   if(!id||!secret){id='dev_'+randomToken(16);secret=randomToken(32);localStorage.setItem(idKey,id);localStorage.setItem(secretKey,secret)}
   return {deviceId:id,deviceSecret:secret,deviceLabel:((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||'Browser')+' device'};
 }
-form.addEventListener('submit',async e=>{e.preventDefault();err.style.display='none';btn.disabled=true;btn.textContent='MEMERIKSA...';try{const identity=deviceIdentity(document.getElementById('username').value);const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:document.getElementById('password').value,...identity})});const d=await r.json().catch(()=>({}));if(!r.ok||!d.ok)throw new Error(d.error||'Login gagal');location.href=d.user?.role==='admin'?'/admin':'/app'}catch(e){err.textContent=e.message;err.style.display='block';btn.disabled=false;btn.textContent='LOGIN'}});
+form.addEventListener('submit',async e=>{e.preventDefault();err.style.display='none';btn.disabled=true;btn.textContent='MEMERIKSA...';try{const identity=deviceIdentity(document.getElementById('username').value);const rememberSession=document.getElementById('rememberSession').checked;const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:document.getElementById('password').value,rememberSession,...identity})});const d=await r.json().catch(()=>({}));if(!r.ok||!d.ok)throw new Error(d.error||'Login gagal');location.href=d.user?.role==='admin'?'/admin':'/app'}catch(e){err.textContent=e.message;err.style.display='block';btn.disabled=false;btn.textContent='LOGIN'}});
 </script>
 </body></html>
