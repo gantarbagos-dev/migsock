@@ -57,6 +57,8 @@ ACTIVE_KICK_JOBS = {}
 ACTIVE_KICK_TASKS = {}
 # Actual asyncio tasks, kept separately so LOGOUT ALL can cancel stale jobs.
 ACTIVE_KICK_TASK_HANDLES = {}
+# Delayed server-owned KickAll schedules: (session_id, room_key) -> task.
+SCHEDULED_KICK_TASKS = {}
 
 def _norm_room_key(room):
     return str(room or "").strip().casefold()
@@ -388,6 +390,16 @@ async def stop_kick_loop(request):
     stopped = 0
     tasks_to_wait = []
 
+    # Cancel delayed server-side triggers as well as already-running jobs.
+    for scheduled_key, scheduled_task in list(SCHEDULED_KICK_TASKS.items()):
+        if scheduled_key[0] != session_id or (room_key and scheduled_key[1] != room_key):
+            continue
+        if scheduled_task and not scheduled_task.done():
+            scheduled_task.cancel()
+            tasks_to_wait.append(scheduled_task)
+            stopped += 1
+        SCHEDULED_KICK_TASKS.pop(scheduled_key, None)
+
     # Iterate over a snapshot because callbacks may remove dictionary entries.
     for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
         if job_key[0] != session_id:
@@ -434,6 +446,71 @@ async def stop_kick_loop(request):
             ACTIVE_KICK_JOBS.pop(job_key, None)
 
     return web.json_response({"ok": True, "stopped": stopped})
+
+
+@require_auth
+async def schedule_kick_loop(request):
+    """Schedule a KickAll job on the server after a bounded delay."""
+    try:
+        data = await request.json()
+        room = str(data.get("room", "")).strip()
+        targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
+        delay_ms = max(0, min(60000, int(data.get("delayMs", 0))))
+        loops = max(1, min(100, int(data.get("loop", 1))))
+        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
+        delay_socket = max(0, int(data.get("delaySocket", 10)))
+        delay_target = max(0, int(data.get("delayTarget", 10)))
+        kick_method = str(data.get("kickMethod", "5-2"))
+        if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
+            kick_method = "5-2"
+    except Exception:
+        return web.json_response({"ok": False, "error": "Parameter schedule tidak valid"}, status=400)
+    if not room or not targets:
+        return web.json_response({"ok": False, "error": "Room dan TARGET wajib diisi"}, status=400)
+    session_id = request.get("session_id")
+    room_key = _norm_room_key(room)
+    schedule_key = (session_id, room_key)
+    old = SCHEDULED_KICK_TASKS.get(schedule_key)
+    if old and not old.done():
+        return web.json_response({"ok": False, "error": "Jadwal KickAll untuk room ini sudah aktif"}, status=409)
+
+    async def delayed_job():
+        try:
+            await asyncio.sleep(delay_ms / 1000.0)
+            socket_entries = session_sockets(session_id)
+            own_ws_names = {name.casefold() for name, _ws in socket_entries}
+            filtered_targets = [t for t in targets if t.casefold() not in own_ws_names]
+            if not socket_entries or not filtered_targets:
+                print(f"[KICK SCHEDULE SKIPPED] session={session_id[:8]} room={room!r}: no active sockets/targets", flush=True)
+                return
+            job_key = (session_id, room_key)
+            if ACTIVE_KICK_TASKS.get(job_key) or ACTIVE_KICK_JOBS.get(job_key):
+                print(f"[KICK SCHEDULE SKIPPED] active job already exists for room={room!r}", flush=True)
+                return
+            job_id = uuid.uuid4().hex[:12]
+            ACTIVE_KICK_TASKS[job_key] = [job_id]
+            task = asyncio.create_task(_run_kick_job(job_id, session_id, room, filtered_targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target, kick_method))
+            ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
+            def _done(done_task):
+                current = ACTIVE_KICK_TASKS.get(job_key, [])
+                if job_id in current:
+                    current.remove(job_id)
+                if not current:
+                    ACTIVE_KICK_TASKS.pop(job_key, None)
+                handles = ACTIVE_KICK_TASK_HANDLES.get(job_key, {})
+                handles.pop(job_id, None)
+                if not handles:
+                    ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
+            task.add_done_callback(_done)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if SCHEDULED_KICK_TASKS.get(schedule_key) is asyncio.current_task():
+                SCHEDULED_KICK_TASKS.pop(schedule_key, None)
+
+    task = asyncio.create_task(delayed_job())
+    SCHEDULED_KICK_TASKS[schedule_key] = task
+    return web.json_response({"ok": True, "scheduled": True, "delayMs": delay_ms}, status=202)
 
 
 @require_auth
@@ -1087,10 +1164,21 @@ async def proxy(request):
         async def upstream_to_browser():
             async for msg in upstream:
                 if msg.type == WSMsgType.TEXT:
+                    # Stamp each upstream event when the VPS receives it, so the
+                    # browser countdown can account for relay/network delay.
+                    try:
+                        event_payload = __import__("json").loads(msg.data)
+                        if isinstance(event_payload, dict):
+                            event_payload["_server_timestamp_ms"] = int(time.time() * 1000)
+                            forwarded_data = __import__("json").dumps(event_payload, separators=(",", ":"))
+                        else:
+                            forwarded_data = msg.data
+                    except Exception:
+                        forwarded_data = msg.data
                     # Forward upstream data to the browser immediately. UI delivery
                     # must not wait for confirmation bookkeeping/database work.
                     if not browser.closed:
-                        await browser.send_str(msg.data)
+                        await browser.send_str(forwarded_data)
                     else:
                         break
 
@@ -1207,6 +1295,7 @@ app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
+app.router.add_post("/api/kick-schedule", schedule_kick_loop)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)

@@ -132,6 +132,20 @@ function isKickEvent(m){
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
 function stopCountdown(reset=true){if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}countdownDeadline=0;if(reset)setCountdownValue(COUNTDOWN_DEFAULT)}
 function resetCountdownTimer(){stopCountdown(true);lastKickEventKey="";countdownKickTriggered=false;log(0,"Countdown di-reset ke 60000 dan berhenti")}
+async function scheduleKickAllOnServer(delayMs){
+  const room=getRoom();
+  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean).slice(0,10);
+  if(!room||!targets.length){log(0,'KICKALL schedule tidak dibuat: room/target kosong');return false;}
+  const cfg={room,targets,delayMs:Math.max(0,Math.min(60000,Math.round(delayMs))),loop:Math.max(1,Number(document.getElementById('loopKick').value)||1),delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100))};
+  try{
+    const r=await fetch('/api/kick-schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||d.ok===false)throw new Error(d.error||`HTTP ${r.status}`);
+    kickRunning=true;setKickButtonState(true);
+    log(0,`Jadwal KickAll disimpan di server; mulai dalam ${Math.ceil(cfg.delayMs/1000)} detik`);
+    return true;
+  }catch(e){log(0,'KICKALL SCHEDULE ERROR: '+e.message);return false;}
+}
 function startCountdownFromKick(m){
   const room=kickEventData(m).room;
   const selected=roomEl.value.trim();
@@ -142,18 +156,25 @@ function startCountdownFromKick(m){
   countdownKickTriggered=false;
   if(countdownTimer)clearInterval(countdownTimer);
   const duration=COUNTDOWN_DEFAULT;
-  const startedAt=performance.now();
+  // Use the VPS timestamp added when the event arrives from the upstream API.
+  // Date.now() lets us subtract time spent relaying the event to this browser.
+  const serverTimestamp=Number(m?._server_timestamp_ms);
+  const elapsedSinceServer=Number.isFinite(serverTimestamp)&&serverTimestamp>0
+    ? Math.max(0,Date.now()-serverTimestamp) : 0;
+  const startedAt=performance.now()-elapsedSinceServer;
   countdownDeadline=startedAt+duration;
-  setCountdownValue(duration);
-  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown mulai ${duration} ms`);
+  setCountdownValue(Math.max(0,duration-elapsedSinceServer));
+  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown berbasis timestamp server; sisa awal ${Math.max(0,duration-elapsedSinceServer)} ms`);
+  const timerKickallAtStart=Math.max(0,Number(document.getElementById("timerKickall")?.value)||0);
+  const serverDelay=Math.max(0,duration-elapsedSinceServer-timerKickallAtStart);
+  void scheduleKickAllOnServer(serverDelay);
   const tick=()=>{
     const remaining=Math.max(0,countdownDeadline-performance.now());
     setCountdownValue(remaining);
     const timerKickall=Math.max(0,Number(document.getElementById("timerKickall")?.value)||0);
     if(!countdownKickTriggered && remaining<=timerKickall){
       countdownKickTriggered=true;
-      log(0,`Countdown ${remaining} ms <= Timer KickAll ${timerKickall} ms → KICKALL TERPICU`);
-      kickAll();
+      log(0,`Countdown mencapai Timer KickAll ${timerKickall} ms; pemicu dijadwalkan di server`);
     }
     if(remaining<=0){
       clearInterval(countdownTimer);

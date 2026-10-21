@@ -151,10 +151,15 @@ function startCountdownFromKick(m){
   countdownKickTriggered=false;
   if(countdownTimer)clearInterval(countdownTimer);
   const duration=COUNTDOWN_DEFAULT;
-  const startedAt=performance.now();
+  // Use the VPS timestamp added when the event arrives from the upstream API.
+  // Date.now() lets us subtract time spent relaying the event to this browser.
+  const serverTimestamp=Number(m?._server_timestamp_ms);
+  const elapsedSinceServer=Number.isFinite(serverTimestamp)&&serverTimestamp>0
+    ? Math.max(0,Date.now()-serverTimestamp) : 0;
+  const startedAt=performance.now()-elapsedSinceServer;
   countdownDeadline=startedAt+duration;
-  setCountdownValue(duration);
-  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown mulai ${duration} ms`);
+  setCountdownValue(Math.max(0,duration-elapsedSinceServer));
+  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown berbasis timestamp server; sisa awal ${Math.max(0,duration-elapsedSinceServer)} ms`);
   const tick=()=>{
     const remaining=Math.max(0,countdownDeadline-performance.now());
     setCountdownValue(remaining);
