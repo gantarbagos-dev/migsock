@@ -459,6 +459,8 @@ async def schedule_kick_loop(request):
         loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
         delay_socket = max(0, int(data.get("delaySocket", 10)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2))))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5))))
         delay_target = max(0, int(data.get("delayTarget", 10)))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
@@ -489,7 +491,7 @@ async def schedule_kick_loop(request):
                 return
             job_id = uuid.uuid4().hex[:12]
             ACTIVE_KICK_TASKS[job_key] = [job_id]
-            task = asyncio.create_task(_run_kick_job(job_id, session_id, room, filtered_targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target, kick_method))
+            task = asyncio.create_task(_run_kick_job(job_id, session_id, room, filtered_targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method))
             ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
             def _done(done_task):
                 current = ACTIVE_KICK_TASKS.get(job_key, [])
@@ -527,6 +529,8 @@ async def kick_loop(request):
             KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
         delay_socket = max(0, int(data.get("delaySocket", 10)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2))))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5))))
         delay_target = max(0, int(data.get("delayTarget", 10)))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
@@ -557,7 +561,7 @@ async def kick_loop(request):
     ACTIVE_KICK_TASKS[job_key] = [job_id]
     task = asyncio.create_task(_run_kick_job(
         job_id, session_id, room, list(targets), socket_entries, loops,
-        kick_limit_per_ws, delay_socket, delay_target, kick_method
+        kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method
     ))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
@@ -582,18 +586,18 @@ async def kick_loop(request):
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
         "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "delayTarget": delay_target, "kickMethod": kick_method, "dispatch": "asyncio.gather",
+        "delaySocket": delay_socket, "socketApplyEvery": socket_apply_every, "targetApplyEvery": target_apply_every, "delayTarget": delay_target, "kickMethod": kick_method, "dispatch": "asyncio.gather",
         "transport": "browser-ws-events"
     }, status=202)
 
-async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target, kick_method):
+async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method):
     # Keep worker failures observable by the frontend instead of leaving a
     # permanent RUNNING state. Cancellation is intentionally silent because
     # LOGOUT/RESET explicitly cancels the worker.
     try:
         return await _run_kick_job_impl(
             job_id, session_id, room, targets, socket_entries, loops,
-            kick_limit_per_ws, delay_socket, delay_target, kick_method
+            kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method
         )
     except asyncio.CancelledError:
         raise
@@ -601,7 +605,7 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         print(f"[KICK JOB ERROR] job={job_id} session={session_id[:8]} room={room!r}: {exc!r}", flush=True)
         raise
 
-async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, delay_target, kick_method):
+async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method):
     """Run Kick All with direct parallel fan-out and no per-socket queue.
 
     Each target is dispatched directly to every active upstream socket with
@@ -663,14 +667,14 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             return 0
         tasks = []
         socket_interval = max(0, delay_socket) / 1000.0
+        socket_apply_every = min(10, max(1, int(socket_apply_every)))
         for index, (name, ws) in enumerate(active):
             tasks.append(asyncio.create_task(
                 send_direct(name, ws, target, is_replacement=is_replacement)
             ))
-            # Apply Delay Socket after each pair of socket starts. Tasks from
-            # the current pair remain in flight while the next pair is delayed.
-            # Other WS tasks remain active while this pair's delay elapses.
-            if socket_interval and (index + 1) % 2 == 0 and index + 1 < len(active):
+            # Apply Delay Socket after the selected number of socket starts.
+            # Tasks already started remain in flight while the next group is delayed.
+            if socket_interval and (index + 1) % socket_apply_every == 0 and index + 1 < len(active):
                 await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return sum(1 for result in results if result is True)
@@ -699,7 +703,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
     loop_no = 0
     processed_target_count = 0
-    target_delay_interval = {"2-2": 2, "3-2": 3, "4-2": 4, "5-2": 5}.get(kick_method, 5)
+    target_delay_interval = min(10, max(1, int(target_apply_every)))
     # Process targets sequentially; fanout_target isolates individual WS failures.
     try:
         while True:
@@ -713,8 +717,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
             loop_no += 1
 
-            # Delay Target follows the selected method: every 5 targets in 5-2,
-            # every 4 targets in 4-2, every 3 targets in 3-2, or every 2 targets in 2-2, including across loop boundaries.
+            # Delay Target follows Delay Target Apply, including across loop boundaries.
             for batch_start in range(0, len(targets), 10):
                 if replacement_state.get("stopped"):
                     break
