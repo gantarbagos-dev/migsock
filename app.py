@@ -389,7 +389,9 @@ async def _run_server_event_countdown(session_id, room, event_key, timer_kickall
                 })
             if remaining_ms <= 0:
                 break
-            await asyncio.sleep(0.25)
+            # Publish countdown progress more frequently for smoother UI updates.
+            # The deadline remains monotonic, so timing accuracy is unchanged.
+            await asyncio.sleep(0.1)
     except asyncio.CancelledError:
         raise
     finally:
@@ -455,6 +457,15 @@ def maybe_start_server_countdown(payload, session_id):
     """Start a deduplicated 60-second server timer for a READY room."""
     config = READY_KICK_CONFIGS.get(session_id)
     if not config:
+        return
+    # Event room tidak boleh memulai countdown bila TARGET kurang dari 10.
+    configured_targets = [str(t).strip() for t in config.get("targets", []) if str(t).strip()]
+    if len(configured_targets) < 10:
+        print(
+            f"[COUNTDOWN SKIPPED] session={session_id[:8]}: target list kurang dari 10 "
+            f"({len(configured_targets)}/10)",
+            flush=True,
+        )
         return
     typ, room, target, status = _kick_event_info(payload)
     action = str(payload.get("action", _event_payload_dict(payload).get("action", ""))).strip().lower()
@@ -956,6 +967,28 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             active_jobs.remove(replacement_state)
         if not active_jobs:
             ACTIVE_KICK_JOBS.pop(job_key, None)
+
+@require_auth
+async def reset_server_countdown(request):
+    """Cancel only this session's server-owned room countdowns."""
+    session_id = request.get("session_id")
+    cancelled = 0
+    for task_key, task in list(SERVER_COUNTDOWN_TASKS.items()):
+        if task_key[0] != session_id:
+            continue
+        if task and not task.done():
+            task.cancel()
+            cancelled += 1
+        SERVER_COUNTDOWN_TASKS.pop(task_key, None)
+        SERVER_COUNTDOWN_KEYS.pop(task_key, None)
+    await publish_browser_event(session_id, {
+        "type": "server.countdown.reset",
+        "remainingMs": 60000,
+        "cancelled": cancelled,
+    })
+    print(f"[COUNTDOWN RESET] session={str(session_id)[:8]} cancelled={cancelled}", flush=True)
+    return web.json_response({"ok": True, "cancelledCountdowns": cancelled})
+
 
 @require_auth
 async def reset_troop_session(request):
@@ -1487,6 +1520,7 @@ app.router.add_post("/api/kick-ready", kick_ready)
 app.router.add_post("/api/kick-loop", kick_loop)
 app.router.add_post("/api/kick-schedule", schedule_kick_loop)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
+app.router.add_post("/api/countdown/reset", reset_server_countdown)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
 
