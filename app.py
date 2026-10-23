@@ -658,6 +658,8 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
             return False
 
+    socket_apply_interval = min(10, max(1, int(socket_apply_every)))
+
     async def fanout_target(target, is_replacement=False):
         """Send to active upstream WebSockets concurrently; isolate per-WS errors."""
         if replacement_state.get("stopped") or target_is_kicked(target):
@@ -667,14 +669,13 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             return 0
         tasks = []
         socket_interval = max(0, delay_socket) / 1000.0
-        socket_apply_every = min(10, max(1, int(socket_apply_every)))
         for index, (name, ws) in enumerate(active):
             tasks.append(asyncio.create_task(
                 send_direct(name, ws, target, is_replacement=is_replacement)
             ))
             # Apply Delay Socket after the selected number of socket starts.
             # Tasks already started remain in flight while the next group is delayed.
-            if socket_interval and (index + 1) % socket_apply_every == 0 and index + 1 < len(active):
+            if socket_interval and (index + 1) % socket_apply_interval == 0 and index + 1 < len(active):
                 await asyncio.sleep(socket_interval)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return sum(1 for result in results if result is True)
