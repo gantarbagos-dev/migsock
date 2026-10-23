@@ -506,7 +506,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
         <option value="1">Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5" selected>Every 5 Target</option><option value="6">Every 6 Target</option><option value="7">Every 7 Target</option><option value="8">Every 8 Target</option><option value="9">Every 9 Target</option><option value="10">Every 10 Target</option>
       </select></div>
-      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><div class="loop-ready-control"><input id="loopKick" type="number" min="1" value="45"><button id="kickReady" type="button" class="primary" aria-pressed="false">READY</button></div></div>
+      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" value="45"></div>
     </div>
     <div class="kick-mode-layout kick-layout-option-b">
       <div class="kick-mode-stack kick-settings-stack">
@@ -750,48 +750,41 @@ function isKickEvent(m){
   return d.type==="room.kick.state" && d.status.includes("a vote to kick");
 }
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
-function stopCountdown(reset=true){
-  if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}
-  countdownDeadline=0;
-  if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
-}
-async function resetCountdownTimer(){
-  stopCountdown(true);lastKickEventKey="";countdownKickTriggered=false;
-  try{
-    const response=await fetch("/api/countdown/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"});
-    const result=await response.json().catch(()=>({}));
-    if(!response.ok||!result.ok)throw new Error(result.error||"Reset countdown gagal di server");
-    setCountdownValue(COUNTDOWN_DEFAULT);
-    log(0,"Countdown di-reset; timer backend dibatalkan.");
-  }catch(error){
-    log(0,"Reset countdown server gagal: "+(error?.message||"koneksi gagal"));
-  }
-}
+function stopCountdown(reset=true){if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}countdownDeadline=0;if(reset)setCountdownValue(COUNTDOWN_DEFAULT)}
+function resetCountdownTimer(){stopCountdown(true);lastKickEventKey="";countdownKickTriggered=false;log(0,"Countdown di-reset ke 60000 dan berhenti")}
 function startCountdownFromKick(m){
-  // Countdown is owned by the backend. Browser events must never start a local
-  // timer or launch KickAll, otherwise closing/reloading the browser changes behavior.
+  const room=kickEventData(m).room;
+  const selected=roomEl.value.trim();
+  if(room && selected && room.toLowerCase()!==selected.toLowerCase())return;
   const key=kickEventKey(m);
   if(key===lastKickEventKey)return;
   lastKickEventKey=key;
-  log(0,"Event vote terdeteksi; countdown dikelola backend.");
-}
-function handleServerCountdownMessage(m){
-  if(m?.type==="server.countdown.update"){
-    setCountdownValue(Number(m.remainingMs)||0);
-    return true;
-  }
-  if(m?.type==="server.countdown.reset"){
-    stopCountdown(true);
-    lastKickEventKey="";countdownKickTriggered=false;
-    setCountdownValue(COUNTDOWN_DEFAULT);
-    return true;
-  }
-  if(m?.type==="server.countdown.threshold"){
-    setCountdownValue(Number(m.remainingMs)||0);
-    log(0,`Backend: batas Timer KickAll tercapai di room ${m.room||"-"}; ${m.message|| (m.autoKickStarted?"KickAll otomatis dimulai.":"KickAll otomatis tidak dimulai.")}`);
-    return true;
-  }
-  return false;
+  countdownKickTriggered=false;
+  if(countdownTimer)clearInterval(countdownTimer);
+  const duration=COUNTDOWN_DEFAULT;
+  const startedAt=performance.now();
+  countdownDeadline=startedAt+duration;
+  setCountdownValue(duration);
+  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown mulai ${duration} ms`);
+  const tick=()=>{
+    const remaining=Math.max(0,countdownDeadline-performance.now());
+    setCountdownValue(remaining);
+    const timerKickall=Math.max(0,Number(document.getElementById("timerKickall")?.value)||0);
+    if(!countdownKickTriggered && remaining<=timerKickall){
+      countdownKickTriggered=true;
+      log(0,`Countdown ${remaining} ms <= Timer KickAll ${timerKickall} ms → KICKALL TERPICU`);
+      kickAll();
+    }
+    if(remaining<=0){
+      clearInterval(countdownTimer);
+      countdownTimer=null;
+      countdownDeadline=0;
+      setCountdownValue(COUNTDOWN_DEFAULT);
+      log(0,"Countdown selesai: 0 → reset 60000 dan berhenti");
+    }
+  };
+  countdownTimer=setInterval(tick,25);
+  tick();
 }
 
 function log(i,m){/* UI log removed */}
@@ -1416,81 +1409,35 @@ function loginOne(i){
     if(stale())return;
     let m;
     try{m=JSON.parse(e.data)}catch(_){log(i,"RECV non-JSON");return}
-    if(handleServerCountdownMessage(m))return;
     dispatchSocketEvent(m,i);
   };
   ws.onerror=()=>{if(stale())return;status(i,"ERROR","error");log(i,"Local WebSocket proxy error")};
   ws.onclose=e=>{if(stale())return;stopPing(i);c.loggedIn=false;c.inRoom=false;if(!c.intentionalClose)status(i,"CLOSED","offline");log(i,`CLOSED code=${e.code} reason=${e.reason||"-"}`);if(c.ws===ws)c.ws=null};
 };
-function collectKickReadyConfig(){
-  const room=getRoom();
-  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
-  const set=collectKickSet();
-  return {
-    room,
-    targets,
-    loop:Math.max(1,Number(set.loopKick)||1),
-    socketApplyEvery:Math.min(10,Math.max(1,Number(set.socketApplyEvery)||2)),
-    targetApplyEvery:Math.min(10,Math.max(1,Number(set.targetApplyEvery)||5)),
-    delaySocket:Math.max(0,Number(set.delaySocket)||0),
-    delayTarget:Math.max(0,Number(set.delayTarget)||0),
-    kickLimitPerWs:Math.min(200,Math.max(1,Number(set.kickLimitPerWs)||100)),
-    timerKickall:Math.max(0,Number(set.timerKickall)||0)
-  };
-}
-let kickReadySnapshot=null;
-function kickConfigFingerprint(cfg){return JSON.stringify(cfg)}
-function setKickReadyState(ready){
-  const b=document.getElementById('kickReady');
-  if(!b)return;
-  b.textContent=ready?'READY ✓':'READY';
-  b.classList.toggle('ready-saved',!!ready);
-  b.classList.toggle('primary',!ready);
-  b.setAttribute('aria-pressed',ready?'true':'false');
-}
-function markKickConfigChanged(){
-  if(!kickReadySnapshot)return;
-  if(kickConfigFingerprint(collectKickReadyConfig())!==kickReadySnapshot){
-    kickReadySnapshot=null;
-    setKickReadyState(false);
-    log(0,'READY dibatalkan: pengaturan berubah, tekan READY kembali.');
-  }
-}
-async function saveKickReady(){
-  if(kickRunning){log(0,'READY ERROR: hentikan pekerjaan aktif sebelum mengganti konfigurasi.');return;}
-  const cfg=collectKickReadyConfig();
-  if(!cfg.room){log(0,'READY ERROR: Room wajib diisi');return;}
-  if(!cfg.targets.length){log(0,'READY ERROR: TARGET wajib diisi');return;}
-  const b=document.getElementById('kickReady');
-  b.disabled=true;b.textContent='...';
-  try{
-    const r=await fetch('/api/kick-ready',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok||d.ok===false)throw new Error(d.error||`HTTP ${r.status}`);
-    kickReadySnapshot=kickConfigFingerprint(cfg);
-    setKickReadyState(true);
-    log(0,`READY tersimpan di backend: ${d.targets} target | Loop=${d.loop} | konfigurasi v${d.configVersion||1}`);
-  }catch(e){kickReadySnapshot=null;setKickReadyState(false);log(0,'READY ERROR: '+e.message)}
-  finally{b.disabled=false;if(!kickReadySnapshot)b.textContent='READY';}
-}
 async function kickAll(){
   if(kickRunning){
     await stopKickAll();
     return;
   }
-  const current=collectKickReadyConfig();
-  if(!kickReadySnapshot||kickConfigFingerprint(current)!==kickReadySnapshot){
-    kickReadySnapshot=null;setKickReadyState(false);
-    log(0,'KICKALL DITOLAK: tekan READY setelah memastikan semua pengaturan benar.');return;
-  }
-  // KickAll sends only a start command. All parameters were saved by READY.
+  const room=getRoom();
+  if(!room){log(0,'KICKALL ERROR: Room wajib diisi');return;}
+  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
+  if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
+  const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
+  const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||2));
+  const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5));
+  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
+  log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  // Set the UI state before awaiting the HTTP response. A very short job can
+  // emit kick.job.finished before fetch() resolves; setting running only after
+  // the response would then leave the button stuck on STOP KICK.
   kickRunning=true;
   setKickButtonState(true);
   try{
-    const r=await fetch('/api/kick-loop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const r=await fetch('/api/kick-loop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||d.ok===false)throw new Error(d.error||`HTTP ${r.status}`);
-    log(0,`KICKALL dimulai backend: job=${d.jobId||'-'} | ${d.targets??'?'} target | WS ${d.websockets??0}`);
+    log(0,`KICKALL diterima backend: job=${d.jobId||'-'} | ${d.targets??targets.length} target | WS ${d.websockets??0}`);
   }catch(e){
     kickRunning=false;
     setKickButtonState(false);
@@ -1914,7 +1861,7 @@ document.getElementById("headerLogout").onclick=async function(){
     button.disabled=false;
     alert(error.message||"Logout panel gagal. Silakan coba lagi.");
   }
-};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("kickReady").onclick=saveKickReady;for(const id of ["room","loopKick","delaySocket","delaySocketApplyEvery","delayTarget","delayTargetApplyEvery","kickLimitPerWs","timerKickall"]){const el=document.getElementById(id);el?.addEventListener("input",markKickConfigChanged);el?.addEventListener("change",markKickConfigChanged)}new MutationObserver(markKickConfigChanged).observe(targetList,{childList:true,subtree:true,attributes:true,attributeFilter:["data-username"]});document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
+};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
 
 /* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
 (function(){
@@ -1979,7 +1926,6 @@ document.getElementById("headerLogout").onclick=async function(){
 }
 
 /* Keep Delay Apply option boxes the same width as their neighboring fields. */
-.loop-ready-control{display:grid;grid-template-columns:minmax(0,1fr) 66px;gap:5px;align-items:stretch}.loop-ready-control input{min-width:0;width:100%;box-sizing:border-box}.loop-ready-control button{min-width:0;width:100%;min-height:42px;height:100%;padding:0 5px;font-size:10px;font-weight:900;white-space:nowrap}.loop-ready-control button.ready-saved{background:linear-gradient(135deg,#059669,#166534);border-color:rgba(110,231,183,.3)}@media(max-width:390px){.loop-ready-control{grid-template-columns:minmax(0,1fr) 54px;gap:3px}.loop-ready-control button{font-size:9px;padding:0 2px}}
 .duel-settings-row .field{min-width:0!important;}
 .duel-settings-row select#delaySocketApplyEvery,
 .duel-settings-row select#delayTargetApplyEvery{display:block!important;width:100%!important;min-width:0!important;max-width:100%!important;box-sizing:border-box!important;}
