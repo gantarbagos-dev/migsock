@@ -136,7 +136,7 @@ async def mark_confirmed_kick(payload, session_id):
 KICK_MAX_PER_SECOND = 200
 KICK_LIMIT_LABEL = f"{KICK_MAX_PER_SECOND}/socket/second"
 # Prevent a stalled upstream WebSocket send from blocking KICKALL indefinitely.
-KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "1.0"))
+KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "0.025"))
 BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "2"))
 
 DOWNLOAD_DIRS = [
