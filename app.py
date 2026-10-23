@@ -458,10 +458,10 @@ async def schedule_kick_loop(request):
         delay_ms = max(0, min(60000, int(data.get("delayMs", 0))))
         loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
-        delay_socket = max(0, int(data.get("delaySocket", 10)))
-        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2))))
-        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5))))
-        delay_target = max(0, int(data.get("delayTarget", 10)))
+        delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery", 5)) or 5)))
+        delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
             kick_method = "5-2"
@@ -524,14 +524,14 @@ async def kick_loop(request):
     room = str(data.get("room", "")).strip()
     targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
     try:
-        loops = max(1, int(data.get("loop", 1)))
+        loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(
             KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
-        delay_socket = max(0, int(data.get("delaySocket", 10)))
-        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2))))
-        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5))))
-        delay_target = max(0, int(data.get("delayTarget", 10)))
+        delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery", 5)) or 5)))
+        delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
             kick_method = "5-2"
@@ -586,7 +586,7 @@ async def kick_loop(request):
         "websockets": len(socket_entries), "targets": len(targets),
         "loop": loops,
         "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "socketApplyEvery": socket_apply_every, "targetApplyEvery": target_apply_every, "delayTarget": delay_target, "kickMethod": kick_method, "dispatch": "asyncio.gather",
+        "delaySocket": delay_socket, "socketApplyEvery": socket_apply_every, "delaySocketApplyEvery": socket_apply_every, "targetApplyEvery": target_apply_every, "delayTargetApplyEvery": target_apply_every, "delayTarget": delay_target, "kickMethod": kick_method, "dispatch": "asyncio.gather",
         "transport": "browser-ws-events"
     }, status=202)
 
