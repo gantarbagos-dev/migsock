@@ -59,11 +59,6 @@ ACTIVE_KICK_TASKS = {}
 ACTIVE_KICK_TASK_HANDLES = {}
 # Delayed server-owned KickAll schedules: (session_id, room_key) -> task.
 SCHEDULED_KICK_TASKS = {}
-# Last validated KickAll configuration, keyed by authenticated browser session.
-READY_KICK_CONFIGS = {}
-# Backend-owned event countdowns, independent of browser timers.
-SERVER_COUNTDOWN_TASKS = {}
-SERVER_COUNTDOWN_KEYS = {}
 
 def _norm_room_key(room):
     return str(room or "").strip().casefold()
@@ -107,28 +102,6 @@ async def mark_confirmed_kick(payload, session_id):
         return None
     target_key = target.casefold()
     job_key = (session_id, room_key)
-
-    # Once the upstream confirms a configured target was kicked, remove it
-    # from the server-side READY list for this session and room. This keeps
-    # subsequent timer starts / READY reuse from re-targeting that username.
-    ready_config = READY_KICK_CONFIGS.get(session_id)
-    if (isinstance(ready_config, dict)
-            and _norm_room_key(ready_config.get("room", "")) == room_key):
-        configured_targets = ready_config.get("targets", [])
-        if isinstance(configured_targets, list):
-            kept_targets = [
-                item for item in configured_targets
-                if str(item).strip().casefold() != target_key
-            ]
-            if len(kept_targets) != len(configured_targets):
-                ready_config["targets"] = kept_targets
-                ready_config["configVersion"] = int(time.time() * 1000)
-                print(
-                    f"[READY TARGET REMOVED] session={session_id[:8]} "
-                    f"room={room!r} target={target!r} "
-                    f"remaining={len(kept_targets)}", flush=True
-                )
-
     jobs = ACTIVE_KICK_JOBS.get(job_key, [])
     newly_marked = False
     for state in list(jobs):
@@ -356,141 +329,6 @@ async def send_kick(ws, room, target, max_per_second=None):
         print(f"[KICK SEND TIMEOUT/ERROR] ws={wsid}", flush=True)
         return False
 
-async def _run_server_event_countdown(session_id, room, event_key, timer_kickall):
-    """Run the room-vote countdown on the VPS and start the READY target list
-    automatically when Timer KickAll is reached. Only explicitly configured
-    targets are sent; the browser is not responsible for the trigger.
-    """
-    task_key = (session_id, _norm_room_key(room))
-    deadline = time.monotonic() + 60.0
-    threshold_sent = False
-    try:
-        while True:
-            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-            await publish_browser_event(session_id, {
-                "type": "server.countdown.update",
-                "room": room,
-                "eventKey": event_key,
-                "remainingMs": remaining_ms,
-                "timerKickall": timer_kickall,
-                "thresholdReached": (not threshold_sent and remaining_ms <= timer_kickall),
-            })
-            if not threshold_sent and remaining_ms <= timer_kickall:
-                threshold_sent = True
-                result = await _start_ready_kick_for_countdown(session_id, room, event_key)
-                await publish_browser_event(session_id, {
-                    "type": "server.countdown.threshold",
-                    "room": room,
-                    "eventKey": event_key,
-                    "remainingMs": remaining_ms,
-                    "timerKickall": timer_kickall,
-                    "autoKickStarted": bool(result.get("ok")),
-                    "message": result.get("message", "Batas Timer KickAll tercapai."),
-                })
-            if remaining_ms <= 0:
-                break
-            # Publish countdown progress more frequently for smoother UI updates.
-            # The deadline remains monotonic, so timing accuracy is unchanged.
-            await asyncio.sleep(0.1)
-    except asyncio.CancelledError:
-        raise
-    finally:
-        if SERVER_COUNTDOWN_TASKS.get(task_key) is asyncio.current_task():
-            SERVER_COUNTDOWN_TASKS.pop(task_key, None)
-
-
-async def _start_ready_kick_for_countdown(session_id, room, event_key):
-    """Start the user's READY-configured target list once at the timer threshold."""
-    config = READY_KICK_CONFIGS.get(session_id)
-    if not config:
-        message = "Timer KickAll tercapai, tetapi konfigurasi belum READY."
-        print(f"[AUTO KICK SKIPPED] session={session_id[:8]} room={room!r}: no READY config", flush=True)
-        return {"ok": False, "message": message}
-    configured_room = str(config.get("room", "")).strip()
-    if not configured_room or _norm_room_key(configured_room) != _norm_room_key(room):
-        message = "Timer KickAll tercapai, tetapi room tidak cocok dengan konfigurasi READY."
-        print(f"[AUTO KICK SKIPPED] session={session_id[:8]} room={room!r}: READY room mismatch", flush=True)
-        return {"ok": False, "message": message}
-    socket_entries = session_sockets(session_id)
-    own_ws_names = {name.casefold() for name, _ws in socket_entries}
-    targets = [str(t).strip() for t in config.get("targets", []) if str(t).strip() and str(t).strip().casefold() not in own_ws_names]
-    if not socket_entries or not targets:
-        message = "Timer KickAll tercapai, tetapi tidak ada WebSocket aktif atau target yang valid."
-        print(f"[AUTO KICK SKIPPED] session={session_id[:8]} room={room!r}: no sockets/targets", flush=True)
-        return {"ok": False, "message": message}
-    job_key = (session_id, _norm_room_key(room))
-    if ACTIVE_KICK_JOBS.get(job_key) or ACTIVE_KICK_TASKS.get(job_key):
-        message = "Timer KickAll tercapai, tetapi job KickAll room ini sudah aktif."
-        print(f"[AUTO KICK SKIPPED] session={session_id[:8]} room={room!r}: job already active", flush=True)
-        return {"ok": False, "message": message}
-    job_id = uuid.uuid4().hex[:12]
-    ACTIVE_KICK_TASKS[job_key] = [job_id]
-    task = asyncio.create_task(_run_kick_job(
-        job_id, session_id, configured_room, targets, socket_entries,
-        config["loop"], config["kickLimitPerWs"], config["delaySocket"],
-        config["socketApplyEvery"], config["targetApplyEvery"],
-        config["delayTarget"], config["kickMethod"]
-    ))
-    ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
-    def _auto_job_done(done_task):
-        current = ACTIVE_KICK_TASKS.get(job_key, [])
-        if job_id in current:
-            current.remove(job_id)
-        if not current:
-            ACTIVE_KICK_TASKS.pop(job_key, None)
-        handles = ACTIVE_KICK_TASK_HANDLES.get(job_key, {})
-        handles.pop(job_id, None)
-        if not handles:
-            ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
-        states = ACTIVE_KICK_JOBS.get(job_key, [])
-        if states:
-            ACTIVE_KICK_JOBS[job_key] = [state for state in states if state.get("jobId") != job_id]
-            if not ACTIVE_KICK_JOBS[job_key]:
-                ACTIVE_KICK_JOBS.pop(job_key, None)
-    task.add_done_callback(_auto_job_done)
-    message = f"Timer KickAll tercapai; KickAll otomatis dimulai untuk {len(targets)} target dari konfigurasi READY."
-    print(f"[AUTO KICK STARTED] job={job_id} session={session_id[:8]} room={configured_room!r} targets={len(targets)} event={event_key!r}", flush=True)
-    return {"ok": True, "message": message, "jobId": job_id, "targets": len(targets)}
-
-
-def maybe_start_server_countdown(payload, session_id):
-    """Start a deduplicated 60-second server timer for a READY room."""
-    config = READY_KICK_CONFIGS.get(session_id)
-    if not config:
-        return
-    # Event room tidak boleh memulai countdown bila TARGET kurang dari 10.
-    configured_targets = [str(t).strip() for t in config.get("targets", []) if str(t).strip()]
-    if len(configured_targets) < 10:
-        print(
-            f"[COUNTDOWN SKIPPED] session={session_id[:8]}: target list kurang dari 10 "
-            f"({len(configured_targets)}/10)",
-            flush=True,
-        )
-        return
-    typ, room, target, status = _kick_event_info(payload)
-    action = str(payload.get("action", _event_payload_dict(payload).get("action", ""))).strip().lower()
-    if typ != "room.kick.state" or action != "vote_started" or "a vote to kick" not in status:
-        return
-    configured_room = str(config.get("room", "")).strip()
-    if room and configured_room and _norm_room_key(room) != _norm_room_key(configured_room):
-        return
-    room = room or configured_room
-    data = _event_payload_dict(payload)
-    event_key = "|".join(str(data.get(k, "")) for k in ("room", "target_username", "username", "time"))
-    if not event_key.strip("|"):
-        event_key = f"{_norm_room_key(room)}|{status}"
-    task_key = (session_id, _norm_room_key(room))
-    if SERVER_COUNTDOWN_KEYS.get(task_key) == event_key:
-        return
-    existing = SERVER_COUNTDOWN_TASKS.get(task_key)
-    if existing and not existing.done():
-        return
-    SERVER_COUNTDOWN_KEYS[task_key] = event_key
-    SERVER_COUNTDOWN_TASKS[task_key] = asyncio.create_task(
-        _run_server_event_countdown(session_id, room, event_key, int(config.get("timerKickall", 0)))
-    )
-
-
 async def publish_browser_event(session_id, payload):
     """Queue browser UI updates without blocking the Kick engine.
 
@@ -678,61 +516,30 @@ async def schedule_kick_loop(request):
 
 
 @require_auth
-async def kick_ready(request):
-    """Validate and store the complete KickAll configuration before execution."""
+async def kick_loop(request):
     try:
         data = await request.json()
-        room = str(data.get("room", "")).strip()
-        targets_raw = data.get("targets", [])
-        if not isinstance(targets_raw, list):
-            raise ValueError("TARGET harus berupa daftar")
-        targets = [str(x).strip() for x in targets_raw if str(x).strip()]
+    except Exception:
+        return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
+    room = str(data.get("room", "")).strip()
+    targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
+    try:
         loops = max(1, int(data.get("loop", 1)))
-        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
+        kick_limit_per_ws = min(
+            KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
+        )
         delay_socket = max(0, int(data.get("delaySocket", 10)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2))))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5))))
         delay_target = max(0, int(data.get("delayTarget", 10)))
-        timer_kickall = max(0, min(3600000, int(data.get("timerKickall", 0))))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
             kick_method = "5-2"
     except Exception:
-        return web.json_response({"ok": False, "error": "Parameter READY tidak valid"}, status=400)
+        return web.json_response({"ok": False, "error": "Parameter kick tidak valid"}, status=400)
     if not room or not targets:
-        return web.json_response({"ok": False, "error": "Room dan TARGET wajib diisi sebelum READY"}, status=400)
+        return web.json_response({"ok": False, "error": "Room dan TARGET wajib diisi"}, status=400)
     session_id = request.get("session_id")
-    room_key = _norm_room_key(room)
-    job_key = (session_id, room_key)
-    if ACTIVE_KICK_JOBS.get(job_key) or ACTIVE_KICK_TASKS.get(job_key):
-        return web.json_response({"ok": False, "error": "Tidak bisa mengganti READY saat pekerjaan room ini aktif"}, status=409)
-    config = {
-        "room": room, "targets": targets, "loop": loops,
-        "kickLimitPerWs": kick_limit_per_ws, "delaySocket": delay_socket,
-        "socketApplyEvery": socket_apply_every, "targetApplyEvery": target_apply_every,
-        "delayTarget": delay_target, "kickMethod": kick_method,
-        "timerKickall": timer_kickall, "configVersion": int(time.time() * 1000),
-    }
-    READY_KICK_CONFIGS[session_id] = config
-    return web.json_response({"ok": True, "ready": True, "targets": len(targets), "loop": loops, "configVersion": config["configVersion"]})
-
-
-@require_auth
-async def kick_loop(request):
-    """Start using the last READY configuration; request body carries no settings."""
-    session_id = request.get("session_id")
-    config = READY_KICK_CONFIGS.get(session_id)
-    if not config:
-        return web.json_response({"ok": False, "error": "Konfigurasi belum READY. Tekan READY terlebih dahulu."}, status=409)
-    room = config["room"]
-    targets = list(config["targets"])
-    loops = config["loop"]
-    kick_limit_per_ws = config["kickLimitPerWs"]
-    delay_socket = config["delaySocket"]
-    socket_apply_every = config["socketApplyEvery"]
-    target_apply_every = config["targetApplyEvery"]
-    delay_target = config["delayTarget"]
-    kick_method = config["kickMethod"]
     socket_entries = session_sockets(session_id)
     own_ws_names = {name.casefold() for name, _ws in socket_entries}
     targets = [t for t in targets if t.casefold() not in own_ws_names]
@@ -898,7 +705,9 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
     loop_no = 0
     processed_target_count = 0
     target_delay_interval = min(10, max(1, int(target_apply_every)))
-    # Process targets sequentially; fanout_target isolates individual WS failures.
+    # Launch each target's fan-out independently; do not wait for one target's
+    # socket sends to finish before scheduling the next target.
+    target_tasks = []
     try:
         while True:
             if loop_no >= loops:
@@ -926,10 +735,9 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                     if replacement_state.get("stopped"):
                         break
 
-                    # Wait for this target's fan-out to finish before starting
-                    # the next target. Each WS send has its own 1s timeout and
-                    # errors are caught per WS, so one failure won't cancel peers.
-                    await fanout_target(target)
+                    # Schedule this target immediately. Its WebSocket fan-out
+                    # runs concurrently with other targets' fan-outs.
+                    target_tasks.append(asyncio.create_task(fanout_target(target)))
                     processed_target_count += 1
 
                     has_more_targets = (
@@ -945,6 +753,9 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 break
             if loop_no >= loops:
                 break
+
+        if target_tasks:
+            await asyncio.gather(*target_tasks, return_exceptions=True)
 
         while replacement_state.get("replacement_tasks"):
             pending = list(replacement_state["replacement_tasks"])
@@ -967,28 +778,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             active_jobs.remove(replacement_state)
         if not active_jobs:
             ACTIVE_KICK_JOBS.pop(job_key, None)
-
-@require_auth
-async def reset_server_countdown(request):
-    """Cancel only this session's server-owned room countdowns."""
-    session_id = request.get("session_id")
-    cancelled = 0
-    for task_key, task in list(SERVER_COUNTDOWN_TASKS.items()):
-        if task_key[0] != session_id:
-            continue
-        if task and not task.done():
-            task.cancel()
-            cancelled += 1
-        SERVER_COUNTDOWN_TASKS.pop(task_key, None)
-        SERVER_COUNTDOWN_KEYS.pop(task_key, None)
-    await publish_browser_event(session_id, {
-        "type": "server.countdown.reset",
-        "remainingMs": 60000,
-        "cancelled": cancelled,
-    })
-    print(f"[COUNTDOWN RESET] session={str(session_id)[:8]} cancelled={cancelled}", flush=True)
-    return web.json_response({"ok": True, "cancelledCountdowns": cancelled})
-
 
 @require_auth
 async def reset_troop_session(request):
@@ -1108,9 +897,7 @@ async def auth_login(request):
 
 
 async def auth_logout(request):
-    token = request.cookies.get(SESSION_COOKIE)
-    READY_KICK_CONFIGS.pop(token, None)
-    destroy_session(token)
+    destroy_session(request.cookies.get(SESSION_COOKIE))
     response = web.json_response({"ok": True})
     response.del_cookie(SESSION_COOKIE, path="/")
     return response
@@ -1408,7 +1195,6 @@ async def proxy(request):
                     # upstream message payload or kick dispatch timing.
                     try:
                         payload = __import__("json").loads(msg.data)
-                        maybe_start_server_countdown(payload, session_id)
                         confirmed = await mark_confirmed_kick(payload, session_id)
                         if confirmed:
                             await publish_browser_event(session_id, {
@@ -1516,11 +1302,9 @@ app.router.add_post("/api/admin/devices/{device_id}/{action}", admin_device_acti
 app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
-app.router.add_post("/api/kick-ready", kick_ready)
 app.router.add_post("/api/kick-loop", kick_loop)
 app.router.add_post("/api/kick-schedule", schedule_kick_loop)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
-app.router.add_post("/api/countdown/reset", reset_server_countdown)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
 
