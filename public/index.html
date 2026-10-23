@@ -494,19 +494,19 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     </div>
     <div class="section-heading compact-heading"><div class="section-icon">⏱️</div><div class="field countdown-field"><input id="countdown" aria-label="Countdown" type="number" min="0" value="60000" readonly></div><button id="resetCountdown" class="reset-timer countdown-reset-inline" title="Reset Countdown ke 60000" aria-label="Reset Countdown ke 60000">↻</button></div>
     <div class="room-timer-row">
-      <div class="field"><label for="timerKickall">Timer KickAll</label><input id="timerKickall" type="number" min="0" value="1000"></div>
+      <div class="field"><label for="timerKickall">Timer KickAll</label><input id="timerKickall" type="number" min="0" value="1500"></div>
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="100"></div>
     </div>
     <div class="duel-settings-row">
-      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="6"></div>
+      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="25"></div>
       <div class="field"><label for="delaySocketApplyEvery">Delay Socket Apply</label><select id="delaySocketApplyEvery">
-        <option value="1">Every 1 Sock</option><option value="2" selected>Every 2 Sock</option><option value="3">Every 3 Sock</option><option value="4">Every 4 Sock</option><option value="5">Every 5 Sock</option><option value="6">Every 6 Sock</option><option value="7">Every 7 Sock</option><option value="8">Every 8 Sock</option><option value="9">Every 9 Sock</option><option value="10">Every 10 Sock</option>
+        <option value="1" selected>Every 1 Sock</option><option value="2">Every 2 Sock</option><option value="3">Every 3 Sock</option><option value="4">Every 4 Sock</option><option value="5">Every 5 Sock</option>
       </select></div>
-      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="2"></div>
+      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="20"></div>
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
-        <option value="1">Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5" selected>Every 5 Target</option><option value="6">Every 6 Target</option><option value="7">Every 7 Target</option><option value="8">Every 8 Target</option><option value="9">Every 9 Target</option><option value="10">Every 10 Target</option>
+        <option value="1" selected>Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5">Every 5 Target</option>
       </select></div>
-      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" value="45"></div>
+      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" value="65"></div>
     </div>
     <div class="kick-mode-layout kick-layout-option-b">
       <div class="kick-mode-stack kick-settings-stack">
@@ -1818,14 +1818,14 @@ function collectKickSet(){
   };
 }
 function applyKickSet(cfg){
-  document.getElementById("delaySocket").value=String(cfg.delaySocket??6);
-  document.getElementById("delaySocketApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.socketApplyEvery??2)||2)));
-  document.getElementById("delayTargetApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.targetApplyEvery??5)||5)));
-  document.getElementById("delayTarget").value=String(cfg.delayTarget??2);
+  document.getElementById("delaySocket").value=String(cfg.delaySocket??25);
+  document.getElementById("delaySocketApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.socketApplyEvery??1)||1)));
+  document.getElementById("delayTargetApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.targetApplyEvery??1)||1)));
+  document.getElementById("delayTarget").value=String(cfg.delayTarget??20);
   document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
-  document.getElementById("loopKick").value=String(cfg.loopKick??45);
+  document.getElementById("loopKick").value=String(cfg.loopKick??65);
   
-  document.getElementById("timerKickall").value=String(cfg.timerKickall??1000);
+  document.getElementById("timerKickall").value=String(cfg.timerKickall??1500);
 }
 function saveKickSet(){
   const name=document.getElementById("saveLoadSet").value.trim() || "kickset";
