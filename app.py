@@ -456,6 +456,20 @@ async def schedule_kick_loop(request):
         room = str(data.get("room", "")).strip()
         targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
         delay_ms = max(0, min(60000, int(data.get("delayMs", 0))))
+        # Countdown-triggered schedules send the remaining vote time and the
+        # timestamp stamped by this VPS when it received the upstream event.
+        # Compute the final wait on the server so browser/SSE/request latency
+        # does not postpone KickAll. The VPS wall clock is used only to measure
+        # age of this server-stamped event; the actual wait uses asyncio.sleep.
+        remaining_ms = data.get("remainingMs")
+        server_timestamp_ms = data.get("serverTimestampMs")
+        threshold_ms = data.get("thresholdMs")
+        if remaining_ms is not None and server_timestamp_ms is not None and threshold_ms is not None:
+            remaining_ms = max(0, min(60000, int(remaining_ms)))
+            server_timestamp_ms = int(server_timestamp_ms)
+            threshold_ms = max(0, min(60000, int(threshold_ms)))
+            event_age_ms = max(0, int(time.time() * 1000) - server_timestamp_ms)
+            delay_ms = max(0, min(60000, remaining_ms - event_age_ms - threshold_ms))
         loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
@@ -513,6 +527,33 @@ async def schedule_kick_loop(request):
     task = asyncio.create_task(delayed_job())
     SCHEDULED_KICK_TASKS[schedule_key] = task
     return web.json_response({"ok": True, "scheduled": True, "delayMs": delay_ms}, status=202)
+
+
+@require_auth
+async def cancel_kick_schedule(request):
+    """Cancel only the pending countdown schedule, without stopping a running job."""
+    session_id = request.get("session_id")
+    try:
+        data = await request.json() if request.can_read_body else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    room = str(data.get("room", "")).strip()
+    room_key = _norm_room_key(room) if room else None
+    cancelled = 0
+    tasks = []
+    for schedule_key, task in list(SCHEDULED_KICK_TASKS.items()):
+        if schedule_key[0] != session_id or (room_key and schedule_key[1] != room_key):
+            continue
+        if task and not task.done():
+            task.cancel()
+            tasks.append(task)
+            cancelled += 1
+        SCHEDULED_KICK_TASKS.pop(schedule_key, None)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return web.json_response({"ok": True, "cancelled": cancelled})
 
 
 @require_auth
@@ -1304,6 +1345,7 @@ app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
 app.router.add_post("/api/kick-schedule", schedule_kick_loop)
+app.router.add_post("/api/kick-schedule-cancel", cancel_kick_schedule)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
