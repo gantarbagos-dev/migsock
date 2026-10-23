@@ -755,9 +755,17 @@ function stopCountdown(reset=true){
   countdownDeadline=0;
   if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
 }
-function resetCountdownTimer(){
+async function resetCountdownTimer(){
   stopCountdown(true);lastKickEventKey="";countdownKickTriggered=false;
-  log(0,"Tampilan countdown di-reset; countdown aktif di backend tidak dibatalkan.");
+  try{
+    const response=await fetch("/api/countdown/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok||!result.ok)throw new Error(result.error||"Reset countdown gagal di server");
+    setCountdownValue(COUNTDOWN_DEFAULT);
+    log(0,"Countdown di-reset; timer backend dibatalkan.");
+  }catch(error){
+    log(0,"Reset countdown server gagal: "+(error?.message||"koneksi gagal"));
+  }
 }
 function startCountdownFromKick(m){
   // Countdown is owned by the backend. Browser events must never start a local
@@ -770,6 +778,12 @@ function startCountdownFromKick(m){
 function handleServerCountdownMessage(m){
   if(m?.type==="server.countdown.update"){
     setCountdownValue(Number(m.remainingMs)||0);
+    return true;
+  }
+  if(m?.type==="server.countdown.reset"){
+    stopCountdown(true);
+    lastKickEventKey="";countdownKickTriggered=false;
+    setCountdownValue(COUNTDOWN_DEFAULT);
     return true;
   }
   if(m?.type==="server.countdown.threshold"){
