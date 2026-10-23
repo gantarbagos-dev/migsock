@@ -750,41 +750,115 @@ function isKickEvent(m){
   return d.type==="room.kick.state" && d.status.includes("a vote to kick");
 }
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
-function stopCountdown(reset=true){if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}countdownDeadline=0;if(reset)setCountdownValue(COUNTDOWN_DEFAULT)}
-function resetCountdownTimer(){stopCountdown(true);lastKickEventKey="";countdownKickTriggered=false;log(0,"Countdown di-reset ke 60000 dan berhenti")}
+function stopCountdown(reset=true){
+  if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}
+  countdownDeadline=0;
+  if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
+}
+async function cancelServerCountdownSchedule(room){
+  try{
+    const response=await fetch('/api/kick-schedule-cancel',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({room:room||roomEl.value.trim()})
+    });
+    const result=await response.json().catch(()=>({}));
+    if(response.ok&&Number(result.cancelled)>0){
+      kickRunning=false;
+      setKickButtonState(false);
+      log(0,'Jadwal KickAll backend dibatalkan');
+    }
+  }catch(_){/* The display reset must remain responsive if offline. */}
+}
+function resetCountdownTimer(){
+  const room=roomEl.value.trim();
+  stopCountdown(true);
+  lastKickEventKey='';
+  countdownKickTriggered=false;
+  cancelServerCountdownSchedule(room);
+  log(0,'Countdown di-reset ke 60000 dan berhenti');
+}
+function countdownRemainingFromEvent(m){
+  const d=kickEventData(m);
+  const candidates=[m?.status_message,m?.data?.status_message,m?.message,m?.data?.message,d.status];
+  for(const value of candidates){
+    const match=String(value??'').match(/\b(\d+)\s*(?:s|sec|secs|second|seconds)\s+remaining\.?/i);
+    if(match)return Math.max(0,Math.min(COUNTDOWN_DEFAULT,Number(match[1])*1000));
+  }
+  const n=Number(m?.remaining_ms??m?.data?.remaining_ms);
+  if(Number.isFinite(n)&&n>=0)return Math.min(COUNTDOWN_DEFAULT,n);
+  return COUNTDOWN_DEFAULT;
+}
+function kickScheduleConfig(room,remainingMs,serverTimestampMs,thresholdMs){
+  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
+  return {
+    room,targets,
+    loop:Math.max(1,Number(document.getElementById('loopKick').value)||1),
+    socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||2)),
+    targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5)),
+    delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),
+    delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),
+    kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),
+    kickMethod:document.querySelector('input[name="kickMethod"]:checked')?.value||'5-2',
+    remainingMs,serverTimestampMs,thresholdMs
+  };
+}
+async function scheduleCountdownKickAll(room,remainingMs,serverTimestampMs,thresholdMs){
+  const cfg=kickScheduleConfig(room,remainingMs,serverTimestampMs,thresholdMs);
+  if(!cfg.room||!cfg.targets.length){
+    log(0,'Countdown mencapai Timer KickAll, tetapi Room atau TARGET belum diisi');
+    return;
+  }
+  countdownKickTriggered=true;
+  kickRunning=true;
+  setKickButtonState(true);
+  try{
+    const response=await fetch('/api/kick-schedule',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)
+    });
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok||result.ok===false)throw new Error(result.error||`HTTP ${response.status}`);
+    log(0,`KickAll dijadwalkan backend; waktu tunggu server ${result.delayMs} ms`);
+  }catch(error){
+    countdownKickTriggered=false;
+    kickRunning=false;
+    setKickButtonState(false);
+    log(0,'Gagal menjadwalkan KickAll di backend: '+error.message);
+  }
+}
 function startCountdownFromKick(m){
   const room=kickEventData(m).room;
   const selected=roomEl.value.trim();
-  if(room && selected && room.toLowerCase()!==selected.toLowerCase())return;
+  if(room&&selected&&room.toLowerCase()!==selected.toLowerCase())return;
   const key=kickEventKey(m);
   if(key===lastKickEventKey)return;
   lastKickEventKey=key;
   countdownKickTriggered=false;
   if(countdownTimer)clearInterval(countdownTimer);
-  const duration=COUNTDOWN_DEFAULT;
+  const duration=countdownRemainingFromEvent(m);
   const startedAt=performance.now();
   countdownDeadline=startedAt+duration;
   setCountdownValue(duration);
-  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown mulai ${duration} ms`);
+  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:''}. Countdown ${duration} ms`);
+
+  // Countdown UI is only a display. The VPS schedules the actual KickAll,
+  // using the VPS-stamped event time to deduct delivery and request latency.
+  const serverTimestampMs=Number(m?._server_timestamp_ms)||Date.now();
+  const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
+  const schedulePromise=scheduleCountdownKickAll(room||selected,duration,serverTimestampMs,timerKickall);
   const tick=()=>{
     const remaining=Math.max(0,countdownDeadline-performance.now());
     setCountdownValue(remaining);
-    const timerKickall=Math.max(0,Number(document.getElementById("timerKickall")?.value)||0);
-    if(!countdownKickTriggered && remaining<=timerKickall){
-      countdownKickTriggered=true;
-      log(0,`Countdown ${remaining} ms <= Timer KickAll ${timerKickall} ms → KICKALL TERPICU`);
-      kickAll();
-    }
     if(remaining<=0){
       clearInterval(countdownTimer);
       countdownTimer=null;
       countdownDeadline=0;
       setCountdownValue(COUNTDOWN_DEFAULT);
-      log(0,"Countdown selesai: 0 → reset 60000 dan berhenti");
+      log(0,'Countdown tampilan selesai; jadwal eksekusi tetap dikendalikan backend');
     }
   };
-  countdownTimer=setInterval(tick,25);
+  countdownTimer=setInterval(tick,100);
   tick();
+  return schedulePromise;
 }
 
 function log(i,m){/* UI log removed */}
