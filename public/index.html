@@ -523,6 +523,11 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 
 
   </section>
+
+  <section class="panel section-card frontend-log-panel" aria-label="Frontend Log">
+    <div class="listtitle"><span>FRONTEND LOG</span><button id="clearFrontendLog" type="button" class="trash-btn" title="Hapus log" aria-label="Hapus log">×</button></div>
+    <div id="frontendLog" role="log" aria-live="polite" aria-label="Catatan frontend" style="height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:rgba(2,6,23,.92);color:#cbd5e1;padding:8px;border:1px solid #334155;border-radius:8px;font:11px/1.45 monospace;scrollbar-width:thin"></div>
+  </section>
 </div>
 
 <script>
@@ -787,7 +792,23 @@ function startCountdownFromKick(m){
   tick();
 }
 
-function log(i,m){/* UI log removed */}
+const frontendLogEl=document.getElementById("frontendLog");
+const FRONTEND_LOG_LIMIT=500;
+function log(i,m){
+  const time=new Date().toLocaleTimeString();
+  const index=Number(i);
+  const source=Number.isFinite(index)&&index>=0?`WS${index+1}`:"APP";
+  const line=`[${time}] [${source}] ${String(m??"")}`;
+  if(frontendLogEl){
+    const row=document.createElement("div");
+    row.textContent=line;
+    frontendLogEl.appendChild(row);
+    while(frontendLogEl.childElementCount>FRONTEND_LOG_LIMIT)frontendLogEl.removeChild(frontendLogEl.firstChild);
+    frontendLogEl.scrollTop=frontendLogEl.scrollHeight;
+  }
+  try{console.log(line)}catch(_e){}
+}
+document.getElementById("clearFrontendLog")?.addEventListener("click",()=>{if(frontendLogEl)frontendLogEl.replaceChildren()});
 function status(i,t,c){const e=document.getElementById(`status-${i}`);e.title=t;e.setAttribute("aria-label",t);e.className="status-balloon "+c}
 function formatNominal(value){
   if(value===null||value===undefined||value==="")return "—";
