@@ -1799,9 +1799,8 @@ async function flatAll(){
 }
 
 function safeDownloadName(name){
-  let n=String(name||"migsock").trim().replace(/[^a-zA-Z0-9._ -]/g,"_");
+  let n=String(name||"migsock").trim().replace(/\.(json|txt)$/i,"").replace(/[^a-zA-Z0-9._ -]/g,"_");
   if(!n)n="migsock";
-  if(!/\.json$/i.test(n))n+=".json";
   return n;
 }
 function collectKickSet(){
@@ -1835,7 +1834,7 @@ function saveKickSet(){
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
   a.href=url;
-  a.download=safeName+"."+format;
+  a.download=safeName.replace(/\.(json|txt)$/i,"")+"."+format;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1852,7 +1851,7 @@ document.getElementById("loadSetFile").addEventListener("change",async function(
     applyKickSet(cfg);
     const base=file.name.replace(/\.(json|txt)$/i,"");
     if(base)document.getElementById("saveLoadSet").value=base;
-    document.getElementById("saveLoadSetFormat").value=/\\.txt$/i.test(file.name)?"txt":"json";
+    document.getElementById("saveLoadSetFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
   }catch(_){
     alert("File SET tidak valid atau rusak.");
   }finally{
@@ -1888,7 +1887,7 @@ function saveConfig(){
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
   a.href=url;
-  a.download=safeDownloadName(name).replace(/\\.json$/i,"")+"."+format;
+  a.download=safeDownloadName(name)+"."+format;
   document.body.appendChild(a);
   a.click();
   a.remove();
