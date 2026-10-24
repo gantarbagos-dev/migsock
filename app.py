@@ -456,19 +456,17 @@ async def schedule_kick_loop(request):
         room = str(data.get("room", "")).strip()
         targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
         delay_ms = max(0, min(60000, int(data.get("delayMs", 0))))
-        # Countdown-triggered schedules send the remaining vote time and the
-        # timestamp stamped by this VPS when it received the upstream event.
-        # Compute the final wait on the server so browser/SSE/request latency
-        # does not postpone KickAll. The VPS wall clock is used only to measure
-        # age of this server-stamped event; the actual wait uses asyncio.sleep.
+        # Countdown schedules carry a monotonic timestamp stamped by this VPS
+        # when the upstream event arrived. Monotonic time is immune to wall-clock
+        # adjustments and includes event-relay/request latency.
         remaining_ms = data.get("remainingMs")
-        server_timestamp_ms = data.get("serverTimestampMs")
+        server_monotonic_ms = data.get("serverMonotonicMs")
         threshold_ms = data.get("thresholdMs")
-        if remaining_ms is not None and server_timestamp_ms is not None and threshold_ms is not None:
+        if remaining_ms is not None and server_monotonic_ms is not None and threshold_ms is not None:
             remaining_ms = max(0, min(60000, int(remaining_ms)))
-            server_timestamp_ms = int(server_timestamp_ms)
+            server_monotonic_ms = float(server_monotonic_ms)
             threshold_ms = max(0, min(60000, int(threshold_ms)))
-            event_age_ms = max(0, int(time.time() * 1000) - server_timestamp_ms)
+            event_age_ms = max(0, int(time.monotonic() * 1000 - server_monotonic_ms))
             delay_ms = max(0, min(60000, remaining_ms - event_age_ms - threshold_ms))
         loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
@@ -491,8 +489,18 @@ async def schedule_kick_loop(request):
         return web.json_response({"ok": False, "error": "Jadwal KickAll untuk room ini sudah aktif"}, status=409)
 
     async def delayed_job():
+        # Use an absolute monotonic deadline so scheduler lag never adds another
+        # full wait after the requested deadline has already passed.
+        deadline = time.monotonic() + delay_ms / 1000.0
         try:
-            await asyncio.sleep(delay_ms / 1000.0)
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+            scheduler_lag_ms = max(0, int((time.monotonic() - deadline) * 1000))
+            print(
+                f"[KICK SCHEDULE TIMING] session={session_id[:8]} room={room!r} "
+                f"event_age_ms={event_age_ms if event_age_ms is not None else 'n/a'} "
+                f"requested_delay_ms={delay_ms} scheduler_lag_ms={scheduler_lag_ms}",
+                flush=True,
+            )
             socket_entries = session_sockets(session_id)
             own_ws_names = {name.casefold() for name, _ws in socket_entries}
             filtered_targets = [t for t in targets if t.casefold() not in own_ws_names]
@@ -1219,6 +1227,7 @@ async def proxy(request):
                         event_payload = __import__("json").loads(msg.data)
                         if isinstance(event_payload, dict):
                             event_payload["_server_timestamp_ms"] = int(time.time() * 1000)
+                            event_payload["_server_monotonic_ms"] = int(time.monotonic() * 1000)
                             forwarded_data = __import__("json").dumps(event_payload, separators=(",", ":"))
                         else:
                             forwarded_data = msg.data
