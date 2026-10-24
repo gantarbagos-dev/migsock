@@ -246,7 +246,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 .header-logout{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:42px;height:42px;min-height:42px;padding:9px;border:1px solid rgba(248,113,113,.35)!important;border-radius:13px;background:linear-gradient(145deg,rgba(190,24,93,.95),rgba(185,28,28,.95))!important;color:#fff!important;box-shadow:0 5px 16px rgba(185,28,28,.22)!important}
 .header-logout svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .header-logout:focus-visible{outline:2px solid #fca5a5;outline-offset:3px}
-</style>
+\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n</style>
 
 <style id="suicide-toggle-style">
 .suicide-toggle{display:block;box-sizing:border-box;width:100%;min-width:0;height:30px;padding:0 3px;border-radius:8px;border:1px solid rgba(100,116,139,.55);font-size:9px;font-weight:800;letter-spacing:0;line-height:1;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:clip;transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease}
@@ -421,7 +421,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   <div class="panel section-card save-card">
     <div class="section-heading"><div class="section-icon">☁️</div><div><strong>Save / Load</strong><small>Simpan atau muat konfigurasi troop</small></div></div>
     <div class="setting-row save-row">
-      <div class="field"><label for="saveLoad">SaveLoad</label><input id="saveLoad" value="multi1" placeholder="Nama simpanan, contoh: multi1" autocomplete="off"><input id="loadFile" type="file" accept=".json,application/json" style="display:none"></div>
+      <div class="field"><label for="saveLoad">SaveLoad</label><input id="saveLoad" value="multi1" placeholder="Nama simpanan, contoh: multi1" autocomplete="off"><select id="saveLoadFormat" aria-label="Format file SaveLoad"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><input id="loadFile" type="file" accept=".json,.txt,application/json,text/plain" style="display:none"></div>
       <div class="field"><label>&nbsp;</label><button id="saveConfig" class="primary">SAVE</button></div>
       <div class="field"><label>&nbsp;</label><button id="loadConfig">LOAD</button></div>
     </div>
@@ -510,10 +510,10 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     </div>
     <div class="kick-mode-layout kick-layout-option-b">
       <div class="kick-mode-stack kick-settings-stack">
-        <div class="field kick-save-field"><label for="saveLoadSet">SaveLoad</label><div class="kick-save-input-row"><input id="saveLoadSet" value="kickset1" placeholder="Nama file set" autocomplete="off"><button id="saveSet" class="primary" type="button"><span class="kick-btn-icon" aria-hidden="true">▣</span><span>SAVE SET</span></button><button id="loadSet" type="button"><span class="kick-btn-icon kick-folder-icon" aria-hidden="true">📂</span><span>LOAD SET</span></button></div>
+        <div class="field kick-save-field"><label for="saveLoadSet">SaveLoad</label><div class="kick-save-input-row"><input id="saveLoadSet" value="kickset1" placeholder="Nama file set" autocomplete="off"><select id="saveLoadSetFormat" aria-label="Format file Save Set"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><button id="saveSet" class="primary" type="button"><span class="kick-btn-icon" aria-hidden="true">▣</span><span>SAVE SET</span></button><button id="loadSet" type="button"><span class="kick-btn-icon kick-folder-icon" aria-hidden="true">📂</span><span>LOAD SET</span></button></div>
         </div>
       </div>
-      <input id="loadSetFile" type="file" accept=".json,application/json" style="display:none">
+      <input id="loadSetFile" type="file" accept=".json,.txt,application/json,text/plain" style="display:none">
       <div class="kick-action-grid kick-mode-actions">
         <button id="suicideToggle" type="button" onclick="toggleSuicide()" class="suicide-toggle suicide-off" title="Suicide OFF; 0/3 username" aria-pressed="false" aria-label="Suicide OFF; 0 of 3 usernames processed">☠️ OFF</button>
         <button id="kickAll" class="danger kickall-side" type="button"><span class="kick-btn-icon" aria-hidden="true">🎯</span><span>KICK ALL</span></button>
@@ -1830,11 +1830,12 @@ function applyKickSet(cfg){
 function saveKickSet(){
   const name=document.getElementById("saveLoadSet").value.trim() || "kickset";
   const safeName=name.replace(/[^a-zA-Z0-9_-]+/g,"_").replace(/^_+|_+$/g,"") || "kickset";
-  const blob=new Blob([JSON.stringify(collectKickSet(),null,2)],{type:"application/json"});
+  const format=document.getElementById("saveLoadSetFormat").value;
+  const blob=new Blob([JSON.stringify(collectKickSet(),null,2)],{type:format==="json"?"application/json":"text/plain"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
   a.href=url;
-  a.download=safeName+".json";
+  a.download=safeName+"."+format;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1849,8 +1850,9 @@ document.getElementById("loadSetFile").addEventListener("change",async function(
   try{
     const cfg=JSON.parse(await file.text());
     applyKickSet(cfg);
-    const base=file.name.replace(/\.json$/i,"");
+    const base=file.name.replace(/\.(json|txt)$/i,"");
     if(base)document.getElementById("saveLoadSet").value=base;
+    document.getElementById("saveLoadSetFormat").value=/\\.txt$/i.test(file.name)?"txt":"json";
   }catch(_){
     alert("File SET tidak valid atau rusak.");
   }finally{
@@ -1881,11 +1883,12 @@ function saveConfig(){
   const range=getRange();
   if(!range)return;
   const cfg=collectConfig();
-  const blob=new Blob([JSON.stringify(cfg,null,2)],{type:"application/json"});
+  const format=document.getElementById("saveLoadFormat").value;
+  const blob=new Blob([JSON.stringify(cfg,null,2)],{type:format==="json"?"application/json":"text/plain"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
   a.href=url;
-  a.download=safeDownloadName(name);
+  a.download=safeDownloadName(name).replace(/\\.json$/i,"")+"."+format;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1917,7 +1920,8 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
   try{
     const cfg=JSON.parse(await file.text());
     applyConfig(cfg);
-    document.getElementById("saveLoad").value=file.name.replace(/\.json$/i,"");
+    document.getElementById("saveLoad").value=file.name.replace(/\.(json|txt)$/i,"");
+    document.getElementById("saveLoadFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
   }catch(err){
     log(0,"LOAD gagal: "+(err?.message||"File JSON tidak valid."));
   }finally{
@@ -2003,6 +2007,27 @@ document.getElementById("headerLogout").onclick=async function(){
 .duel-settings-row .field{min-width:0!important;}
 .duel-settings-row select#delaySocketApplyEvery,
 .duel-settings-row select#delayTargetApplyEvery{display:block!important;width:100%!important;min-width:0!important;max-width:100%!important;box-sizing:border-box!important;}
+</style>
+
+<style id="compact-json-txt-format-selectors">
+/* Keep each SaveLoad textbox compact, with its JSON/TXT selector immediately beside it. */
+.save-row{grid-template-columns:minmax(0,1fr) 70px 70px!important;gap:6px!important}
+.save-row .field:first-child{display:grid!important;grid-template-columns:minmax(0,125px) 54px!important;justify-content:start!important;gap:4px!important;min-width:0!important}
+.save-row .field:first-child label{grid-column:1/-1!important}
+.save-row .field:first-child #saveLoad{width:100%!important;min-width:0!important;max-width:125px!important;box-sizing:border-box!important}
+.save-row #saveLoadFormat{width:54px!important;min-width:54px!important;max-width:54px!important;padding:2px 3px!important;font-size:10px!important;letter-spacing:0!important;white-space:nowrap!important;box-sizing:border-box!important}
+.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,125px) 54px 78px 78px!important;justify-content:start!important;gap:5px!important}
+.kick-layout-option-b .kick-save-input-row #saveLoadSet{width:100%!important;min-width:0!important;max-width:125px!important;box-sizing:border-box!important}
+.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:54px!important;min-width:54px!important;max-width:54px!important;padding:2px 3px!important;font-size:10px!important;letter-spacing:0!important;white-space:nowrap!important;box-sizing:border-box!important}
+@media(max-width:390px){
+ .save-row{grid-template-columns:minmax(0,1fr) 56px 56px!important;gap:4px!important}
+ .save-row .field:first-child{grid-template-columns:minmax(0,105px) 54px!important;gap:4px!important}
+ .save-row .field:first-child #saveLoad{max-width:105px!important}
+ .save-row #saveLoadFormat{width:54px!important;min-width:54px!important;max-width:54px!important;font-size:10px!important;padding:2px 3px!important}
+ .kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,105px) 54px 66px 66px!important;gap:4px!important}
+ .kick-layout-option-b .kick-save-input-row #saveLoadSet{max-width:105px!important}
+ .kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:54px!important;min-width:54px!important;max-width:54px!important;font-size:10px!important;padding:2px 3px!important}
+}
 </style>
 </body>
 </html>
