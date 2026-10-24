@@ -788,7 +788,7 @@ function countdownRemainingFromEvent(m){
   if(Number.isFinite(n)&&n>=0)return Math.min(COUNTDOWN_DEFAULT,n);
   return COUNTDOWN_DEFAULT;
 }
-function kickScheduleConfig(room,remainingMs,serverTimestampMs,thresholdMs){
+function kickScheduleConfig(room,remainingMs,serverMonotonicMs,thresholdMs){
   const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
   return {
     room,targets,
@@ -799,11 +799,11 @@ function kickScheduleConfig(room,remainingMs,serverTimestampMs,thresholdMs){
     delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),
     kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),
     kickMethod:document.querySelector('input[name="kickMethod"]:checked')?.value||'5-2',
-    remainingMs,serverTimestampMs,thresholdMs
+    remainingMs,serverMonotonicMs,thresholdMs
   };
 }
-async function scheduleCountdownKickAll(room,remainingMs,serverTimestampMs,thresholdMs){
-  const cfg=kickScheduleConfig(room,remainingMs,serverTimestampMs,thresholdMs);
+async function scheduleCountdownKickAll(room,remainingMs,serverMonotonicMs,thresholdMs){
+  const cfg=kickScheduleConfig(room,remainingMs,serverMonotonicMs,thresholdMs);
   if(!cfg.room||!cfg.targets.length){
     log(0,'Countdown mencapai Timer KickAll, tetapi Room atau TARGET belum diisi');
     return;
@@ -842,9 +842,9 @@ function startCountdownFromKick(m){
 
   // Countdown UI is only a display. The VPS schedules the actual KickAll,
   // using the VPS-stamped event time to deduct delivery and request latency.
-  const serverTimestampMs=Number(m?._server_timestamp_ms)||Date.now();
+  const serverMonotonicMs=Number(m?._server_monotonic_ms);
   const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
-  const schedulePromise=scheduleCountdownKickAll(room||selected,duration,serverTimestampMs,timerKickall);
+  const schedulePromise=scheduleCountdownKickAll(room||selected,duration,serverMonotonicMs,timerKickall);
   const tick=()=>{
     const remaining=Math.max(0,countdownDeadline-performance.now());
     setCountdownValue(remaining);
