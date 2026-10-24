@@ -462,6 +462,9 @@ async def schedule_kick_loop(request):
         remaining_ms = data.get("remainingMs")
         server_monotonic_ms = data.get("serverMonotonicMs")
         threshold_ms = data.get("thresholdMs")
+        # Initialize for schedules that do not include countdown metadata.
+        # delayed_job closes over this value for timing logs.
+        event_age_ms = None
         if remaining_ms is not None and server_monotonic_ms is not None and threshold_ms is not None:
             remaining_ms = max(0, min(60000, int(remaining_ms)))
             server_monotonic_ms = float(server_monotonic_ms)
