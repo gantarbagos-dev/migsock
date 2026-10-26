@@ -541,7 +541,7 @@ tabFlat.onclick=()=>switchTab("flat");
 const N=10;
 const clients=Array.from({length:N},()=>({ws:null,loggedIn:false,inRoom:false,pingTimer:null,intentionalClose:false,balance:null,generation:0}));
 const rows=document.getElementById("rows"),roomEl=document.getElementById("room"),userList=document.getElementById("userList"),targetList=document.getElementById("targetList"),userCount=document.getElementById("userCount"),targetCount=document.getElementById("targetCount"),saveLoadEl=document.getElementById("saveLoad");
-let confirmedKickedTargets=new Set();let kickRunning=false;
+let confirmedKickedTargets=new Set();let kickRunning=false;let troopResetGeneration=0;let roomBatchGeneration=0;
 const SAVE_PREFIX="migsock_config_";
 let participantUsers=[];
 let participantBySocket=Array.from({length:N},()=>[]);
@@ -566,7 +566,7 @@ function queueParticipantRender(){
     showUsers(merged,false);
   };
   if(typeof requestAnimationFrame==="function")appState.participantRenderTimer=requestAnimationFrame(flush);
-  else appState.participantRenderTimer=setTimeout(flush,32);
+  else appState.participantRenderTimer=setTimeout(flush,25);
 }
 function rebuildParticipantState(){
   appState.participants.clear();
@@ -803,6 +803,7 @@ function kickScheduleConfig(room,remainingMs,serverMonotonicMs,thresholdMs){
   };
 }
 async function scheduleCountdownKickAll(room,remainingMs,serverMonotonicMs,thresholdMs){
+  const resetGeneration=troopResetGeneration;
   const cfg=kickScheduleConfig(room,remainingMs,serverMonotonicMs,thresholdMs);
   if(!cfg.room||!cfg.targets.length){
     log(0,'Countdown mencapai Timer KickAll, tetapi Room atau TARGET belum diisi');
@@ -817,6 +818,10 @@ async function scheduleCountdownKickAll(room,remainingMs,serverMonotonicMs,thres
     });
     const result=await response.json().catch(()=>({}));
     if(!response.ok||result.ok===false)throw new Error(result.error||`HTTP ${response.status}`);
+    if(resetGeneration!==troopResetGeneration){
+      await fetch("/api/kick-stop",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>{});
+      kickRunning=false;setKickButtonState(false);return;
+    }
     log(0,`KickAll dijadwalkan backend; waktu tunggu server ${result.delayMs} ms`);
   }catch(error){
     countdownKickTriggered=false;
@@ -856,7 +861,7 @@ function startCountdownFromKick(m){
       log(0,'Countdown tampilan selesai; jadwal eksekusi tetap dikendalikan backend');
     }
   };
-  countdownTimer=setInterval(tick,100);
+  countdownTimer=setInterval(tick,50);
   tick();
   return schedulePromise;
 }
@@ -1305,7 +1310,7 @@ function setPass(){
 }
 function send(i,o,hideLog=false){const c=clients[i];if(!c.ws||c.ws.readyState!==WebSocket.OPEN){log(i,"Socket belum OPEN");return false}c.ws.send(JSON.stringify(o));if(hideLog)log(i,`SEND ${o.type}`);else log(i,"SEND "+JSON.stringify(o));return true}
 function stopPing(i){if(clients[i].pingTimer){clearInterval(clients[i].pingTimer);clients[i].pingTimer=null}}
-function startPing(i){stopPing(i);clients[i].pingTimer=setInterval(()=>{if(clients[i].loggedIn)send(i,{type:"ping"},true)},40000)}
+function startPing(i){stopPing(i);clients[i].pingTimer=setInterval(()=>{if(clients[i].loggedIn)send(i,{type:"ping"},true)},45000)}
 function logoutOne(i){
   const c=clients[i];
   c.generation++;
@@ -1323,6 +1328,8 @@ function clearTroopClientState(){
   autoTargetCycle++;
   autoTargetLocked=false;
   participantUsers=[];
+  appState.eventSeq=0;
+  appState.lastEventAt=0;
   participantExpected=new Set();
   participantReceived=new Set();
   participantBySocket=Array.from({length:N},()=>[]);
@@ -1341,13 +1348,48 @@ function clearTroopClientState(){
   updateTargetCount();
 }
 function loginAll(){for(let i=0;i<N;i++){const x=cred(i);if(x.username&&x.password)loginOne(i)}}
+let logoutAllPromise=null;
 async function logoutAll(){
-  resetSuicideFeature("LOGOUT ALL");
-  clearTroopClientState();
-  const resetPromise=fetch("/api/troop/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>null);
-  await Promise.race([resetPromise,new Promise(r=>setTimeout(r,1000))]);
-  for(let i=0;i<N;i++)logoutOne(i);
-  log(0,"LOGOUT ALL: seluruh WS/session troop lama dibersihkan; aplikasi tetap terbuka");
+  if(logoutAllPromise)return logoutAllPromise;
+  logoutAllPromise=(async()=>{
+    // Invalidate pending frontend work first so late responses/events cannot
+    // restore a previous duel's state after logout has started.
+    troopResetGeneration++;
+    resetSuicideFeature("LOGOUT ALL");
+    stopCountdown(true);
+    lastKickEventKey="";
+    countdownKickTriggered=false;
+    kickRunning=false;
+    setKickButtonState(false);
+    clearTroopClientState();
+    roomBatchGeneration++;
+    roomBatchAction=null;
+    // Close local WS immediately so late upstream events cannot repopulate state
+    // while backend workers and upstream sessions are being reset.
+    for(let i=0;i<N;i++)logoutOne(i);
+
+    // Stop all server-side scheduled/running jobs, then reset upstream sessions.
+    // Wait for both requests to settle; do not continue after an arbitrary timeout.
+    let stopError=null, resetError=null;
+    try{
+      const stopResponse=await fetch("/api/kick-stop",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"});
+      const stopResult=await stopResponse.json().catch(()=>({}));
+      if(!stopResponse.ok||stopResult.ok===false)throw new Error(stopResult.error||`HTTP ${stopResponse.status}`);
+    }catch(e){stopError=e}
+    try{
+      const resetResponse=await fetch("/api/troop/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"});
+      const resetResult=await resetResponse.json().catch(()=>({}));
+      if(!resetResponse.ok||resetResult.ok===false)throw new Error(resetResult.error||`HTTP ${resetResponse.status}`);
+    }catch(e){resetError=e}
+    // A clean local state is guaranteed; if the server could not be reached,
+    // report that explicitly rather than silently claiming a complete reset.
+    if(stopError||resetError){
+      log(0,`LOGOUT ALL: state lokal dibersihkan, tetapi reset backend gagal${stopError?` (stop: ${stopError.message})`:""}${resetError?` (reset: ${resetError.message})`:""}. Periksa koneksi lalu tekan LOGOUT ALL lagi.`);
+    }else{
+      log(0,"LOGOUT ALL selesai: timer, state duel, job backend, sesi upstream, dan seluruh WS dibersihkan; aplikasi tetap terbuka");
+    }
+  })();
+  try{await logoutAllPromise}finally{logoutAllPromise=null}
 }
 // ENTER ALL / LEAVE ALL mengirim ke setiap WS satu per satu dengan jeda 80 ms.
 let roomBatchAction=null;
@@ -1356,17 +1398,20 @@ const roomBatchSleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function runRoomBatchAction(action,room){
   if(roomBatchAction){log(0,`ROOM ${roomBatchAction.toUpperCase()} masih berjalan; abaikan ${action.toUpperCase()}`);return}
   roomBatchAction=action;
+  const batchGeneration=roomBatchGeneration;
   const messageType=action==="join"?"room.join":"room.leave";
   let sentCount=0;
   try{
     for(let i=0;i<N;i++){
+      if(batchGeneration!==roomBatchGeneration)break;
       if(!clients[i].loggedIn)continue;
       if(sentCount>0)await roomBatchSleep(ROOM_SOCKET_DELAY_MS);
+      if(batchGeneration!==roomBatchGeneration)break;
       send(i,{type:messageType,room},true);
       sentCount++;
     }
-    log(0,`${action==="join"?"ENTER":"LEAVE"} ALL selesai dikirim (${sentCount} WS, jeda antar WS ${ROOM_SOCKET_DELAY_MS} ms)`);
-  }finally{roomBatchAction=null}
+    if(batchGeneration===roomBatchGeneration)log(0,`${action==="join"?"ENTER":"LEAVE"} ALL selesai dikirim (${sentCount} WS, jeda antar WS ${ROOM_SOCKET_DELAY_MS} ms)`);
+  }finally{if(batchGeneration===roomBatchGeneration)roomBatchAction=null}
 }
 function enterAll(){const room=getRoom();if(!room)return;void runRoomBatchAction("join",room)}
 function leaveAll(){
@@ -1502,6 +1547,7 @@ async function kickAll(){
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5));
   const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  const resetGeneration=troopResetGeneration;
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
   // the response would then leave the button stuck on STOP KICK.
@@ -1511,8 +1557,13 @@ async function kickAll(){
     const r=await fetch('/api/kick-loop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||d.ok===false)throw new Error(d.error||`HTTP ${r.status}`);
+    if(resetGeneration!==troopResetGeneration){
+      await fetch("/api/kick-stop",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>{});
+      return;
+    }
     log(0,`KICKALL diterima backend: job=${d.jobId||'-'} | ${d.targets??targets.length} target | WS ${d.websockets??0}`);
   }catch(e){
+    if(resetGeneration!==troopResetGeneration)return;
     kickRunning=false;
     setKickButtonState(false);
     log(0,'KICKALL ERROR: '+e.message);
