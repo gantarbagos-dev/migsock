@@ -136,8 +136,8 @@ async def mark_confirmed_kick(payload, session_id):
 KICK_MAX_PER_SECOND = 200
 KICK_LIMIT_LABEL = f"{KICK_MAX_PER_SECOND}/socket/second"
 # Prevent a stalled upstream WebSocket send from blocking KICKALL indefinitely.
-KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "0.2"))
-BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "0.2"))
+KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "0.05"))
+BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "0.05"))
 
 DOWNLOAD_DIRS = [
     Path.home() / "storage" / "downloads",
@@ -836,6 +836,16 @@ async def reset_troop_session(request):
     """Clear troop-side jobs/state without logging the browser application out."""
     session_id = request.get("session_id")
     cancelled = 0
+    tasks_to_wait = []
+    # Cancel pending countdown schedules for this session as part of the full reset.
+    for schedule_key, task in list(SCHEDULED_KICK_TASKS.items()):
+        if schedule_key[0] != session_id:
+            continue
+        if task and not task.done():
+            task.cancel()
+            tasks_to_wait.append(task)
+            cancelled += 1
+        SCHEDULED_KICK_TASKS.pop(schedule_key, None)
     for job_key in list(ACTIVE_KICK_JOBS.keys()):
         if job_key[0] == session_id:
             for state in ACTIVE_KICK_JOBS.get(job_key, []):
@@ -843,6 +853,7 @@ async def reset_troop_session(request):
                 for replacement_task in list(state.get("replacement_tasks", set())):
                     if replacement_task and not replacement_task.done():
                         replacement_task.cancel()
+                        tasks_to_wait.append(replacement_task)
             ACTIVE_KICK_JOBS.pop(job_key, None)
     for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
         if job_key[0] != session_id:
@@ -851,8 +862,24 @@ async def reset_troop_session(request):
         for task in list(handles.values()):
             if task and not task.done():
                 task.cancel()
+                tasks_to_wait.append(task)
                 cancelled += 1
         ACTIVE_KICK_TASKS.pop(job_key, None)
+    if tasks_to_wait:
+        await asyncio.gather(*tasks_to_wait, return_exceptions=True)
+    # Remove stale task/job registry entries after cancellation has settled.
+    for job_key in list(ACTIVE_KICK_TASK_HANDLES.keys()):
+        if job_key[0] == session_id:
+            handles = ACTIVE_KICK_TASK_HANDLES.get(job_key, {})
+            for job_id, task in list(handles.items()):
+                if task is None or task.done():
+                    handles.pop(job_id, None)
+            if not handles:
+                ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
+            if not ACTIVE_KICK_TASKS.get(job_key):
+                ACTIVE_KICK_TASKS.pop(job_key, None)
+            if not ACTIVE_KICK_JOBS.get(job_key):
+                ACTIVE_KICK_JOBS.pop(job_key, None)
     # Close every upstream belonging to this troop session so the next LOGIN ALL
     # always starts with fresh developer sessions.
     sockets = list((SESSION_UPSTREAM.get(session_id) or {}).values())
