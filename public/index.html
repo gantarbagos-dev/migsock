@@ -495,7 +495,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     <div class="section-heading compact-heading"><div class="section-icon">⏱️</div><div class="field countdown-field"><input id="countdown" aria-label="Countdown" type="number" min="0" value="60000" readonly></div><button id="resetCountdown" class="reset-timer countdown-reset-inline" title="Reset Countdown ke 60000" aria-label="Reset Countdown ke 60000">↻</button></div>
     <div class="room-timer-row">
       <div class="field"><label for="timerKickall">Timer KickAll</label><input id="timerKickall" type="number" min="0" value="1500"></div>
-      <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="100"></div>
+      <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="50"></div>
     </div>
     <div class="duel-settings-row">
       <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="25"></div>
@@ -1497,7 +1497,7 @@ async function kickAll(){
   const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
   const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||2));
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5));
-  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
+  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||50)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
   const resetGeneration=troopResetGeneration;
   // Set the UI state before awaiting the HTTP response. A very short job can
@@ -1813,7 +1813,7 @@ function collectKickSet(){
     socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delaySocketApplyEvery").value)||2)),
     targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delayTargetApplyEvery").value)||5)),
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
-    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||100,
+    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||50,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
     timerKickall:Number(document.getElementById("timerKickall").value)||0
@@ -1824,7 +1824,7 @@ function applyKickSet(cfg){
   document.getElementById("delaySocketApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.socketApplyEvery??1)||1)));
   document.getElementById("delayTargetApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.targetApplyEvery??1)||1)));
   document.getElementById("delayTarget").value=String(cfg.delayTarget??20);
-  document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
+  document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??50)||50)));
   document.getElementById("loopKick").value=String(cfg.loopKick??65);
   
   document.getElementById("timerKickall").value=String(cfg.timerKickall??1500);
