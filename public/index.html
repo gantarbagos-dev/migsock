@@ -755,26 +755,10 @@ function stopCountdown(reset=true){
   countdownDeadline=0;
   if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
 }
-async function cancelServerCountdownSchedule(room){
-  try{
-    const response=await fetch('/api/kick-schedule-cancel',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({room:room||roomEl.value.trim()})
-    });
-    const result=await response.json().catch(()=>({}));
-    if(response.ok&&Number(result.cancelled)>0){
-      kickRunning=false;
-      setKickButtonState(false);
-      log(0,'Jadwal KickAll backend dibatalkan');
-    }
-  }catch(_){/* The display reset must remain responsive if offline. */}
-}
 function resetCountdownTimer(){
-  const room=roomEl.value.trim();
   stopCountdown(true);
   lastKickEventKey='';
   countdownKickTriggered=false;
-  cancelServerCountdownSchedule(room);
   log(0,'Countdown di-reset ke 60000 dan berhenti');
 }
 function countdownRemainingFromEvent(m){
@@ -788,48 +772,6 @@ function countdownRemainingFromEvent(m){
   if(Number.isFinite(n)&&n>=0)return Math.min(COUNTDOWN_DEFAULT,n);
   return COUNTDOWN_DEFAULT;
 }
-function kickScheduleConfig(room,remainingMs,serverMonotonicMs,thresholdMs){
-  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
-  return {
-    room,targets,
-    loop:Math.max(1,Number(document.getElementById('loopKick').value)||1),
-    socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||2)),
-    targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5)),
-    delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),
-    delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),
-    kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),
-    kickMethod:document.querySelector('input[name="kickMethod"]:checked')?.value||'5-2',
-    remainingMs,serverMonotonicMs,thresholdMs
-  };
-}
-async function scheduleCountdownKickAll(room,remainingMs,serverMonotonicMs,thresholdMs){
-  const resetGeneration=troopResetGeneration;
-  const cfg=kickScheduleConfig(room,remainingMs,serverMonotonicMs,thresholdMs);
-  if(!cfg.room||!cfg.targets.length){
-    log(0,'Countdown mencapai Timer KickAll, tetapi Room atau TARGET belum diisi');
-    return;
-  }
-  countdownKickTriggered=true;
-  kickRunning=true;
-  setKickButtonState(true);
-  try{
-    const response=await fetch('/api/kick-schedule',{
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)
-    });
-    const result=await response.json().catch(()=>({}));
-    if(!response.ok||result.ok===false)throw new Error(result.error||`HTTP ${response.status}`);
-    if(resetGeneration!==troopResetGeneration){
-      await fetch("/api/kick-stop",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>{});
-      kickRunning=false;setKickButtonState(false);return;
-    }
-    log(0,`KickAll dijadwalkan backend; waktu tunggu server ${result.delayMs} ms`);
-  }catch(error){
-    countdownKickTriggered=false;
-    kickRunning=false;
-    setKickButtonState(false);
-    log(0,'Gagal menjadwalkan KickAll di backend: '+error.message);
-  }
-}
 function startCountdownFromKick(m){
   const room=kickEventData(m).room;
   const selected=roomEl.value.trim();
@@ -840,30 +782,40 @@ function startCountdownFromKick(m){
   countdownKickTriggered=false;
   if(countdownTimer)clearInterval(countdownTimer);
   const duration=countdownRemainingFromEvent(m);
-  const startedAt=performance.now();
-  countdownDeadline=startedAt+duration;
+  const receivedAt=performance.now();
+  countdownDeadline=receivedAt+duration;
   setCountdownValue(duration);
   log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:''}. Countdown ${duration} ms`);
 
-  // Countdown UI is only a display. The VPS schedules the actual KickAll,
-  // using the VPS-stamped event time to deduct delivery and request latency.
-  const serverMonotonicMs=Number(m?._server_monotonic_ms);
+  // Use a monotonic deadline, not repeated subtraction, so delayed interval
+  // callbacks and background-tab pauses do not accumulate countdown drift.
+  // The event has no guaranteed monotonic source timestamp, so do not invent
+  // a fixed network-delay correction.
   const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
-  const schedulePromise=scheduleCountdownKickAll(room||selected,duration,serverMonotonicMs,timerKickall);
+  let expectedTickAt=receivedAt+25;
+  let maxTickLateness=0;
   const tick=()=>{
-    const remaining=Math.max(0,countdownDeadline-performance.now());
+    const now=performance.now();
+    if(now>expectedTickAt)maxTickLateness=Math.max(maxTickLateness,now-expectedTickAt);
+    expectedTickAt=now+25;
+    const remaining=Math.max(0,countdownDeadline-now);
+    countdownEl().dataset.tickLatenessMs=String(Math.round(maxTickLateness));
     setCountdownValue(remaining);
+    if(!countdownKickTriggered && remaining<=timerKickall){
+      countdownKickTriggered=true;
+      log(0,`Countdown frontend mencapai Timer KickAll (${timerKickall} ms); menjalankan KickAll`);
+      void kickAll();
+    }
     if(remaining<=0){
       clearInterval(countdownTimer);
       countdownTimer=null;
       countdownDeadline=0;
       setCountdownValue(COUNTDOWN_DEFAULT);
-      log(0,'Countdown tampilan selesai; jadwal eksekusi tetap dikendalikan backend');
+      log(0,'Countdown frontend selesai');
     }
   };
-  countdownTimer=setInterval(tick,50);
+  countdownTimer=setInterval(tick,25);
   tick();
-  return schedulePromise;
 }
 
 function log(i,m){/* UI log removed */}
