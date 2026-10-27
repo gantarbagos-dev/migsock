@@ -448,7 +448,7 @@ async def kick_loop(request):
     try:
         loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(
-            KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
+            KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 50)))
         )
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
@@ -563,19 +563,11 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             if replacement_state.get("stopped") or target_key in replacement_state["kicked"]:
                 return False
         try:
-            # Independent deadline per WS task. A timeout only cancels this
-            # socket's send attempt; fanout_target gathers with
-            # return_exceptions=True, so other WS tasks keep running.
-            async with asyncio.timeout(KICK_SEND_TIMEOUT):
-                result = await send_kick(ws, room, target, kick_limit_per_ws)
+            # The limiter may wait for a slot without the network-send timeout
+            # cancelling that wait. KICK_SEND_TIMEOUT is applied only around
+            # ws.send_json() inside send_kick().
+            result = await send_kick(ws, room, target, kick_limit_per_ws)
             return result is not False
-        except asyncio.TimeoutError:
-            print(
-                f"[KICK WS TIMEOUT] job={job_id} ws={ws_name} "
-                f"target={target!r} timeout={KICK_SEND_TIMEOUT}s; continuing other WS",
-                flush=True,
-            )
-            return False
         except Exception as exc:
             print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
             return False
