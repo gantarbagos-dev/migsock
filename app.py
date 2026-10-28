@@ -57,6 +57,11 @@ ACTIVE_KICK_JOBS = {}
 ACTIVE_KICK_TASKS = {}
 # Actual asyncio tasks, kept separately so LOGOUT ALL can cancel stale jobs.
 ACTIVE_KICK_TASK_HANDLES = {}
+# Backend-authoritative room countdowns keyed by (session, normalized room).
+ACTIVE_COUNTDOWNS = {}
+# Latest countdown configuration synced by the UI; event detection itself runs on the VPS.
+COUNTDOWN_CONFIGS = {}
+COUNTDOWN_LAST_EVENT = {}
 # Delayed server-owned KickAll schedules: (session_id, room_key) -> task.
 
 def _norm_room_key(room):
@@ -135,7 +140,7 @@ async def mark_confirmed_kick(payload, session_id):
 KICK_MAX_PER_SECOND = 200
 KICK_LIMIT_LABEL = f"{KICK_MAX_PER_SECOND}/socket/second"
 # Prevent a stalled upstream WebSocket send from blocking KICKALL indefinitely.
-KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "0.05"))
+KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "1.0"))
 BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "0.05"))
 
 DOWNLOAD_DIRS = [
@@ -437,6 +442,255 @@ async def stop_kick_loop(request):
     return web.json_response({"ok": True, "stopped": stopped})
 
 
+async def _start_kick_job_backend(session_id, data):
+    """Start the existing kick worker from a backend-owned countdown."""
+    room = str(data.get("room", "")).strip()
+    targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
+    loops = max(1, min(100, int(data.get("loop", 1))))
+    kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND))))
+    delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
+    socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2) or 2)))
+    target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5) or 5)))
+    delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
+    kick_method = str(data.get("kickMethod", "5-2"))
+    if kick_method not in {"5-2", "4-2", "3-2", "2-2"}: kick_method = "5-2"
+    if not room or not targets: raise ValueError("Room dan TARGET wajib diisi")
+    socket_entries = session_sockets(session_id)
+    own_ws_names = {name.casefold() for name, _ws in socket_entries}
+    targets = [t for t in targets if t.casefold() not in own_ws_names]
+    if not socket_entries: raise ValueError("Tidak ada WebSocket yang aktif")
+    if not targets: raise ValueError("Tidak ada target duel yang valid")
+    job_key = (session_id, _norm_room_key(room))
+    if ACTIVE_KICK_JOBS.get(job_key) or ACTIVE_KICK_TASKS.get(job_key):
+        raise ValueError("Masih ada job aktif untuk room ini")
+    job_id = uuid.uuid4().hex[:12]
+    ACTIVE_KICK_TASKS[job_key] = [job_id]
+    task = asyncio.create_task(_run_kick_job(job_id, session_id, room, list(targets), socket_entries, loops,
+        kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method))
+    ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
+    def _job_done(_task):
+        current = ACTIVE_KICK_TASKS.get(job_key, [])
+        if job_id in current:
+            current.remove(job_id)
+        if not current: ACTIVE_KICK_TASKS.pop(job_key, None)
+        handles = ACTIVE_KICK_TASK_HANDLES.get(job_key, {})
+        handles.pop(job_id, None)
+        if not handles: ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
+    task.add_done_callback(_job_done)
+    return job_id
+
+def _countdown_event_info(payload):
+    """Normalize supported upstream shapes without relying on browser relay."""
+    if not isinstance(payload, dict):
+        return None
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    data = event.get("data") if isinstance(event.get("data"), dict) else _event_payload_dict(event)
+    typ = str(event.get("type", data.get("type", data.get("event_type", "")))).strip().lower()
+    room = str(event.get("room", data.get("room", data.get("room_name", "")))).strip()
+    status = " ".join(str(value or "") for value in (
+        event.get("status_message"), data.get("status_message"),
+        event.get("message"), data.get("message"), event.get("text"), data.get("text"),
+        event.get("status"), data.get("status")))
+    status = status.strip().lower()
+    # Keep the same event type and phrase requirement; accept common payload
+    # field placements so a valid upstream event is not silently missed.
+    if typ != "room.kick.state" or "a vote to kick" not in status:
+        return None
+    return room, status
+
+def _event_remaining_ms(payload):
+    if not isinstance(payload, dict):
+        return 60000
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    data = event.get("data") if isinstance(event.get("data"), dict) else _event_payload_dict(event)
+    candidates = [event.get("status_message"), data.get("status_message"),
+                  event.get("message"), data.get("message"), event.get("text"), data.get("text"),
+                  event.get("status"), data.get("status")]
+    for value in candidates:
+        match = re.search(r"\b(\d+)\s*(?:s|sec|secs|second|seconds)\s+remaining\.?", str(value or ""), re.I)
+        if match:
+            return max(0, min(60000, int(match.group(1)) * 1000))
+    for value in (event.get("remaining_ms"), data.get("remaining_ms"), payload.get("remaining_ms")):
+        try:
+            number = int(value)
+            if number >= 0:
+                return min(60000, number)
+        except (TypeError, ValueError):
+            pass
+    return 60000
+
+async def _start_countdown_from_upstream_event(session_id, payload, received_mono=None, received_wall_ms=None):
+    """Detect and schedule countdown directly from the upstream WS event on the VPS."""
+    info = _countdown_event_info(payload)
+    if not info:
+        return False
+    event_room, _status = info
+    if not event_room:
+        return False
+    room_key = _norm_room_key(event_room)
+    config = COUNTDOWN_CONFIGS.get((session_id, room_key))
+    if not config:
+        return False
+    now_mono = time.monotonic() if received_mono is None else received_mono
+    now_wall_ms = int(time.time() * 1000) if received_wall_ms is None else received_wall_ms
+    duration_ms = _event_remaining_ms(payload)
+    try:
+        trigger_ms = max(0, min(duration_ms, int(config.get("timerKickall", 1500))))
+    except (TypeError, ValueError):
+        trigger_ms = min(duration_ms, 1500)
+    event_key = (session_id, room_key)
+    # Keep one timer per room/vote episode. Upstream services may emit repeated
+    # status updates with changing seconds/vote counts; those must not restart
+    # the deadline or launch a second job while the original countdown is live.
+    active = ACTIVE_COUNTDOWNS.get(event_key)
+    if active:
+        task = active.get("task")
+        if task and not task.done():
+            return False
+        if now_mono < active.get("deadline", 0) and (active.get("triggered") or active.get("error")):
+            return False
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    data = _event_payload_dict(event)
+    dedupe_key = str(event.get("event_id") or event.get("eventId") or event.get("id") or data.get("event_id") or data.get("eventId") or data.get("id") or "")
+    if not dedupe_key:
+        # Do not include the changing remaining-seconds text in the fallback
+        # identity. Target and event timestamp, when present, are more stable.
+        status_text = " ".join(str(x or "") for x in (
+            event.get("status_message"), data.get("status_message"),
+            event.get("message"), data.get("message"), event.get("text"), data.get("text")))
+        target_match = re.search(r"a vote to kick\s+(.+?)\s*:", status_text, re.I)
+        target = target_match.group(1).strip().casefold() if target_match else ""
+        dedupe_key = "|".join(str(x or "") for x in (
+            event.get("type", data.get("type", data.get("event_type", ""))),
+            event_room.casefold(), target,
+            event.get("time", data.get("time", data.get("timestamp", "")))))
+    previous = COUNTDOWN_LAST_EVENT.get(event_key)
+    if isinstance(previous, tuple):
+        previous_key, previous_mono = previous
+        if dedupe_key and previous_key == dedupe_key and now_mono - previous_mono < 60000:
+            return False
+    elif dedupe_key and previous == dedupe_key:
+        # Compatibility with any old in-memory value during a hot reload.
+        return False
+    COUNTDOWN_LAST_EVENT[event_key] = (dedupe_key, now_mono)
+    old = ACTIVE_COUNTDOWNS.pop(event_key, None)
+    if old and old.get("task") and not old["task"].done():
+        old["task"].cancel()
+    # Anchor the deadline to the instant the VPS received the event. Processing,
+    # scheduler and browser-relay delays therefore consume the countdown rather
+    # than extending it.
+    deadline = now_mono + duration_ms / 1000
+    trigger_at = deadline - trigger_ms / 1000
+    state = {"room": event_room, "deadline": deadline, "received_mono": now_mono,
+             "received_wall_ms": now_wall_ms, "duration_ms": duration_ms,
+             "trigger_ms": trigger_ms, "triggered": False, "error": None,
+             "job_id": None, "task": None, "source": "upstream_websocket",
+             "event_key": dedupe_key, "late_by_ms": 0}
+    async def runner():
+        try:
+            await asyncio.sleep(max(0, trigger_at - time.monotonic()))
+            if ACTIVE_COUNTDOWNS.get(event_key) is not state:
+                return
+            state["triggered"] = True
+            state["triggered_at"] = time.monotonic()
+            state["late_by_ms"] = max(0, int((state["triggered_at"] - trigger_at) * 1000))
+            state["job_id"] = await _start_kick_job_backend(session_id, config.get("kickConfig") or {})
+            await publish_browser_event(session_id, {"type":"countdown.backend.triggered", "room":event_room,
+                "job_id":state["job_id"], "late_by_ms":state["late_by_ms"]})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            state["error"] = str(exc)
+            print(f"[COUNTDOWN EVENT ERROR] room={event_room!r}: {exc!r}", flush=True)
+            await publish_browser_event(session_id, {"type":"countdown.backend.error", "room":event_room, "error":str(exc)[:300]})
+    state["task"] = asyncio.create_task(runner())
+    ACTIVE_COUNTDOWNS[event_key] = state
+    await publish_browser_event(session_id, {"type":"countdown.backend.started", "room":event_room,
+        "duration_ms":duration_ms, "trigger_ms":trigger_ms, "source":"upstream_websocket",
+        "server_received_ms":now_wall_ms})
+    print(f"[COUNTDOWN EVENT] room={event_room!r} duration_ms={duration_ms} trigger_ms={trigger_ms} source=upstream_websocket", flush=True)
+    return True
+
+@require_auth
+async def countdown_config(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok":False,"error":"JSON tidak valid"}, status=400)
+    session_id = request.get("session_id")
+    room = str(data.get("room", "")).strip()
+    if not room:
+        return web.json_response({"ok":False,"error":"Room wajib diisi"}, status=400)
+    config = data.get("kickConfig") if isinstance(data.get("kickConfig"), dict) else {}
+    try:
+        timer_kickall = max(0, min(60000, int(data.get("timerKickall", 1500))))
+    except (TypeError, ValueError):
+        timer_kickall = 1500
+    COUNTDOWN_CONFIGS[(session_id, _norm_room_key(room))] = {
+        "room":room, "timerKickall":timer_kickall, "kickConfig":config,
+        "updated_mono":time.monotonic()
+    }
+    return web.json_response({"ok":True,"room":room,"serverNowMs":int(time.time()*1000)})
+
+@require_auth
+async def countdown_start(request):
+    try: data = await request.json()
+    except Exception: return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
+    session_id = request.get("session_id")
+    room = str(data.get("room", "")).strip()
+    try:
+        duration_ms = max(0, min(60000, int(data.get("durationMs", 60000))))
+        trigger_ms = max(0, min(duration_ms, int(data.get("timerKickall", 1500))))
+    except Exception: return web.json_response({"ok": False, "error": "Timer tidak valid"}, status=400)
+    if not room: return web.json_response({"ok": False, "error": "Room wajib diisi"}, status=400)
+    key = (session_id, _norm_room_key(room))
+    old = ACTIVE_COUNTDOWNS.pop(key, None)
+    if old and old.get("task") and not old["task"].done(): old["task"].cancel()
+    deadline = time.monotonic() + duration_ms / 1000
+    state = {"room": room, "deadline": deadline, "duration_ms": duration_ms, "trigger_ms": trigger_ms,
+             "triggered": False, "error": None, "job_id": None, "task": None}
+    async def runner():
+        try:
+            wait_s = max(0, duration_ms - trigger_ms) / 1000
+            await asyncio.sleep(wait_s)
+            if ACTIVE_COUNTDOWNS.get(key) is not state: return
+            state["triggered"] = True
+            state["triggered_at"] = time.monotonic()
+            state["job_id"] = await _start_kick_job_backend(session_id, data.get("kickConfig") or {})
+        except asyncio.CancelledError: raise
+        except Exception as exc:
+            state["error"] = str(exc)
+            print(f"[COUNTDOWN ERROR] room={room!r}: {exc!r}", flush=True)
+    state["task"] = asyncio.create_task(runner())
+    ACTIVE_COUNTDOWNS[key] = state
+    return web.json_response({"ok": True, "room": room, "serverNowMs": int(time.time()*1000),
+        "deadlineEpochMs": int(time.time()*1000) + duration_ms, "durationMs": duration_ms,
+        "triggerMs": trigger_ms})
+
+@require_auth
+async def countdown_status(request):
+    room = str(request.query.get("room", "")).strip()
+    key = (request.get("session_id"), _norm_room_key(room))
+    state = ACTIVE_COUNTDOWNS.get(key)
+    if not state: return web.json_response({"ok": True, "active": False})
+    remaining = max(0, int((state["deadline"] - time.monotonic()) * 1000))
+    return web.json_response({"ok": True, "active": True, "room": state["room"], "remainingMs": remaining,
+        "triggerMs": state["trigger_ms"], "triggered": state["triggered"], "jobId": state["job_id"],
+        "error": state["error"], "source": state.get("source", "api"),
+        "lateByMs": state.get("late_by_ms", 0), "serverReceivedMs": state.get("received_wall_ms")})
+
+@require_auth
+async def countdown_stop(request):
+    session_id = request.get("session_id")
+    try: data = await request.json()
+    except Exception: data = {}
+    room = str(data.get("room", "")).strip()
+    keys = [k for k in ACTIVE_COUNTDOWNS if k[0] == session_id and (not room or k[1] == _norm_room_key(room))]
+    for key in keys:
+        state = ACTIVE_COUNTDOWNS.pop(key, None)
+        if state and state.get("task") and not state["task"].done(): state["task"].cancel()
+    return web.json_response({"ok": True, "stopped": len(keys)})
+
 @require_auth
 async def kick_loop(request):
     try:
@@ -448,7 +702,7 @@ async def kick_loop(request):
     try:
         loops = max(1, min(100, int(data.get("loop", 1))))
         kick_limit_per_ws = min(
-            KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 50)))
+            KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", KICK_MAX_PER_SECOND)))
         )
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
@@ -563,11 +817,18 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             if replacement_state.get("stopped") or target_key in replacement_state["kicked"]:
                 return False
         try:
-            # The limiter may wait for a slot without the network-send timeout
-            # cancelling that wait. KICK_SEND_TIMEOUT is applied only around
-            # ws.send_json() inside send_kick().
+            # Rate-limit queueing may legitimately wait for the next slot.
+            # send_kick applies KICK_SEND_TIMEOUT only to the actual socket write,
+            # so waiting for a limiter slot does not incorrectly drop the target.
             result = await send_kick(ws, room, target, kick_limit_per_ws)
             return result is not False
+        except asyncio.TimeoutError:
+            print(
+                f"[KICK WS TIMEOUT] job={job_id} ws={ws_name} "
+                f"target={target!r} timeout={KICK_SEND_TIMEOUT}s; continuing other WS",
+                flush=True,
+            )
+            return False
         except Exception as exc:
             print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
             return False
@@ -1109,8 +1370,12 @@ async def proxy(request):
                     try:
                         event_payload = __import__("json").loads(msg.data)
                         if isinstance(event_payload, dict):
-                            event_payload["_server_timestamp_ms"] = int(time.time() * 1000)
-                            event_payload["_server_monotonic_ms"] = int(time.monotonic() * 1000)
+                            received_wall_ms = int(time.time() * 1000)
+                            received_mono = time.monotonic()
+                            event_payload["_server_timestamp_ms"] = received_wall_ms
+                            event_payload["_server_monotonic_ms"] = int(received_mono * 1000)
+                            # Countdown trigger is detected on the VPS before browser relay.
+                            await _start_countdown_from_upstream_event(session_id, event_payload, received_mono, received_wall_ms)
                             forwarded_data = __import__("json").dumps(event_payload, separators=(",", ":"))
                         else:
                             forwarded_data = msg.data
@@ -1236,6 +1501,10 @@ app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
+app.router.add_post("/api/countdown/config", countdown_config)
+app.router.add_post("/api/countdown/start", countdown_start)
+app.router.add_get("/api/countdown/status", countdown_status)
+app.router.add_post("/api/countdown/stop", countdown_stop)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
