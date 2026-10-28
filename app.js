@@ -265,22 +265,35 @@ async function resetCountdownTimer(){
 }
 async function syncCountdownConfig(){
   const roomName=roomEl.value.trim();
-  if(!roomName)return false;
+  if(!roomName){
+    const el=countdownEl();
+    if(el)el.dataset.configSync='idle';
+    return false;
+  }
+  if(countdownConfigSyncBusy)return false;
+  countdownConfigSyncBusy=true;
   try{
     const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
     const kickConfig=countdownKickConfig(roomName);
     const r=await fetch('/api/countdown/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room:roomName,timerKickall,kickConfig})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
+    countdownEl().dataset.configSync='connected';
     return true;
   }catch(e){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='GAGAL SINKRONISASI KONFIG TIMER BACKEND: '+e.message;
+    const el=countdownEl();
+    if(el){
+      el.dataset.configSync='error';
+      el.title='GAGAL SINKRONISASI KONFIG TIMER BACKEND: '+e.message;
+    }
     return false;
+  }finally{
+    countdownConfigSyncBusy=false;
   }
 }
 let countdownStatusRoom='';
 let countdownPollBusy=false;
+let countdownConfigSyncBusy=false;
 async function pollCountdownBackend(){
   if(countdownPollBusy)return;
   const roomName=roomEl.value.trim();
@@ -299,14 +312,14 @@ async function pollCountdownBackend(){
     if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
     if(!d.active){
       countdownEl().dataset.timerBackend='connected';
-      countdownEl().title=`Sumber waktu: backend | Room: ${roomName} | Menunggu event pemicu.`;
+      countdownEl().title=`Sumber waktu: backend | Sinkronisasi konfigurasi: ${countdownEl().dataset.configSync||'belum dikonfirmasi'} | Room: ${roomName} | Menunggu event pemicu.`;
       countdownDisplayAnchor=null;
       setCountdownValue(COUNTDOWN_DEFAULT);
       countdownKickTriggered=false;
       return;
     }
     countdownEl().dataset.timerBackend=d.error?'error':(d.triggered?'triggered':'connected');
-    countdownEl().title=d.error?('MASALAH TIMER BACKEND: '+d.error):`Sumber waktu: backend | Room: ${d.room||roomName} | Sisa ${d.remainingMs} ms | Keterlambatan pemicu ${d.lateByMs||0} ms | Status: ${d.triggered?'job sudah dipicu':'menghitung'}${d.jobId?' | Job '+d.jobId:''}`;
+    countdownEl().title=d.error?('MASALAH TIMER BACKEND: '+d.error):`Sumber waktu: backend | Sinkronisasi konfigurasi: ${countdownEl().dataset.configSync||'belum dikonfirmasi'} | Room: ${d.room||roomName} | Sisa ${d.remainingMs} ms | Keterlambatan pemicu ${d.lateByMs||0} ms | Status: ${d.triggered?'job sudah dipicu':'menghitung'}${d.jobId?' | Job '+d.jobId:''}`;
     // Server snapshot is authoritative; interpolate only the display between polls.
     // This does not trigger actions or change the backend deadline.
     anchorCountdownDisplay(d.remainingMs);
