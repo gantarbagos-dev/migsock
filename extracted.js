@@ -177,7 +177,7 @@ function startCountdownFromKick(m){
       log(0,"Countdown selesai: 0 → reset 60000 dan berhenti");
     }
   };
-  countdownTimer=setInterval(tick,25);
+  countdownTimer=setInterval(tick,10);
   tick();
 }
 
