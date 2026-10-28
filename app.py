@@ -1633,42 +1633,61 @@ async def _start_kick_job_backend(session_id, data):
     return job_id
 
 def _countdown_event_info(payload):
-    """Normalize common upstream event envelopes without relying on browser relay."""
+    """Normalize nested upstream WS envelopes and detect the actual kick-vote status."""
     if not isinstance(payload, dict):
         return None
 
-    # Upstream messages may wrap the event at event, data.event, or data.data.
+    # Walk only common envelope containers, with a depth/size bound to avoid
+    # traversing arbitrary participant data or cyclic objects.
     candidates = []
-    def add_candidate(value):
-        if isinstance(value, dict) and value not in candidates:
-            candidates.append(value)
-    add_candidate(payload)
-    add_candidate(payload.get("event"))
-    outer_data = payload.get("data")
-    add_candidate(outer_data)
-    if isinstance(outer_data, dict):
-        add_candidate(outer_data.get("event"))
-        add_candidate(outer_data.get("data"))
-        nested = outer_data.get("data")
-        if isinstance(nested, dict):
-            add_candidate(nested.get("event"))
+    queue = [(payload, 0)]
+    seen = set()
+    while queue and len(candidates) < 80:
+        value, depth = queue.pop(0)
+        if not isinstance(value, dict) or id(value) in seen:
+            continue
+        seen.add(id(value))
+        candidates.append(value)
+        if depth < 6:
+            for key in ("event", "data", "payload", "message"):
+                child = value.get(key)
+                if isinstance(child, dict):
+                    queue.append((child, depth + 1))
 
     for event in candidates:
-        data = event.get("data") if isinstance(event.get("data"), dict) else event
-        typ = str(event.get("type", data.get("type", data.get("event_type", payload.get("type", ""))))).strip().lower()
-        action = str(event.get("action", data.get("action", payload.get("action", "")))).strip().lower()
-        room = str(event.get("room", data.get("room", data.get("room_name",
-                    payload.get("room", outer_data.get("room", "") if isinstance(outer_data, dict) else ""))))).strip()
-        status = " ".join(str(value or "") for value in (
-            event.get("status_message"), data.get("status_message"),
-            event.get("message"), data.get("message"), event.get("text"), data.get("text"),
-            event.get("status"), data.get("status"), payload.get("status_message")))
-        status = status.strip().lower()
-        is_vote_start = typ == "room.kick.state" and action == "vote_started"
-        has_vote_phrase = "a vote to kick" in status
-        has_remaining = bool(re.search(r"\b\d+\s*(?:s|sec|secs|second|seconds)\s+remaining\b", status, re.I))
-        if typ == "room.kick.state" and (has_vote_phrase or (is_vote_start and has_remaining)):
-            return room, status
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        typ = str(event.get("type") or event.get("event_type") or data.get("type") or data.get("event_type") or "").strip().lower()
+        if typ != "room.kick.state":
+            continue
+        status_values = []
+        for obj in (event, data):
+            for key in ("status_message", "message", "text", "status", "description"):
+                value = obj.get(key)
+                if isinstance(value, (str, int, float)) and str(value).strip():
+                    status_values.append(str(value).strip())
+        status = " ".join(dict.fromkeys(status_values)).strip()
+        if not re.search(r"a\s+vote\s+to\s+kick\b", status, re.I):
+            continue
+        room = ""
+        for obj in (event, data):
+            for key in ("room", "room_name", "roomName", "channel", "channel_name"):
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    room = value.strip()
+                    break
+            if room:
+                break
+        # A room may be present on an enclosing envelope rather than the event.
+        if not room:
+            for obj in candidates:
+                for key in ("room", "room_name", "roomName", "channel", "channel_name"):
+                    value = obj.get(key)
+                    if isinstance(value, str) and value.strip():
+                        room = value.strip()
+                        break
+                if room:
+                    break
+        return room, status
     return None
 
 def _event_remaining_ms(payload):
@@ -1716,13 +1735,21 @@ async def _start_countdown_from_upstream_event(session_id, payload, received_mon
             print(f"[COUNTDOWN IGNORE] unsupported event envelope type={event_type!r}", flush=True)
         return False
     event_room, _status = info
+    known_configs = [(key, value) for key, value in COUNTDOWN_CONFIGS.items() if key[0] == session_id]
     if not event_room:
-        print("[COUNTDOWN IGNORE] kick vote event has no room name", flush=True)
-        return False
+        # Some upstream kick-state envelopes omit the room field. Use a fallback
+        # only when this session has exactly one configured room; never guess
+        # between multiple rooms.
+        if len(known_configs) == 1:
+            event_room = str(known_configs[0][1].get("room", "")).strip()
+            print(f"[COUNTDOWN ROOM FALLBACK] event omitted room; using sole configured room={event_room!r}", flush=True)
+        else:
+            print(f"[COUNTDOWN IGNORE] kick vote event has no room name; configured_rooms={[v.get('room') for _, v in known_configs]}", flush=True)
+            return False
     room_key = _norm_room_key(event_room)
     config = COUNTDOWN_CONFIGS.get((session_id, room_key))
     if not config:
-        print(f"[COUNTDOWN IGNORE] no config for session={str(session_id)[:8]} room={event_room!r}; known_rooms={[v.get('room') for (sid, _), v in COUNTDOWN_CONFIGS.items() if sid == session_id]}", flush=True)
+        print(f"[COUNTDOWN IGNORE] no config for session={str(session_id)[:8]} room={event_room!r}; known_rooms={[v.get('room') for _, v in known_configs]}", flush=True)
         return False
     now_mono = time.monotonic() if received_mono is None else received_mono
     now_wall_ms = int(time.time() * 1000) if received_wall_ms is None else received_wall_ms
@@ -2594,7 +2621,8 @@ async def proxy(request):
                             forwarded_data = __import__("json").dumps(event_payload, separators=(",", ":"))
                         else:
                             forwarded_data = msg.data
-                    except Exception:
+                    except Exception as exc:
+                        print(f"[COUNTDOWN PROXY PARSE ERROR] {type(exc).__name__}: {exc!r}", flush=True)
                         forwarded_data = msg.data
                     # Forward upstream data to the browser immediately. UI delivery
                     # must not wait for confirmation bookkeeping/database work.
