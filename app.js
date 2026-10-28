@@ -208,14 +208,20 @@ function renderCountdownDisplay(){
   const elapsed=Math.max(0,performance.now()-countdownDisplayAnchor.at);
   setCountdownValue(Math.max(0,countdownDisplayAnchor.remainingMs-elapsed));
 }
-function kickEventData(m){const d=m?.data&&typeof m.data==="object"?m.data:m||{};return {
-  type:String(m?.type??d?.type??d?.event_type??"").toLowerCase(),
-  action:String(m?.action??d?.action??"").toLowerCase(),
-  status:String(m?.status_message??d?.status_message??d?.message??"").toLowerCase(),
-  room:String(m?.room??d?.room??"").trim(),
-  target:String(m?.target_username??d?.target_username??d?.username??d?.target??"").trim(),
-  time:String(m?.time??d?.time??d?.timestamp??"").trim()
-}}
+function kickEventData(m){
+  const e=m?.event&&typeof m.event==="object"?m.event:
+    (m?.data?.event&&typeof m.data.event==="object"?m.data.event:m||{});
+  const d=e?.data&&typeof e.data==="object"?e.data:
+    (m?.data&&typeof m.data==="object"?m.data:e||{});
+  return {
+    type:String(e?.type??d?.type??d?.event_type??m?.type??"").toLowerCase(),
+    action:String(e?.action??d?.action??m?.action??"").toLowerCase(),
+    status:String(e?.status_message??d?.status_message??e?.message??d?.message??e?.text??d?.text??e?.status??d?.status??"").toLowerCase(),
+    room:String(e?.room??d?.room??d?.room_name??m?.room??"").trim(),
+    target:String(e?.target_username??d?.target_username??d?.username??d?.target??m?.target_username??"").trim(),
+    time:String(e?.time??d?.time??d?.timestamp??m?.time??"").trim()
+  }
+}
 function isConfirmedKickEvent(m){
   const d=kickEventData(m);
   if(!d.target)return false;
@@ -235,7 +241,9 @@ function isKickEvent(m){
   // Countdown hanya dipicu oleh event room.kick.state dengan pesan "A vote to kick".
   // Event kick lain, room.kick.result, room.kicked, atau action vote_started tanpa
   // pesan "A vote to kick" tidak boleh menyalakan countdown.
-  return d.type==="room.kick.state" && d.status.includes("a vote to kick");
+  return d.type==="room.kick.state" &&
+    (d.status.includes("a vote to kick") ||
+     (d.action==="vote_started" && /\b\d+\s*(?:s|sec|secs|second|seconds)\s+remaining\b/i.test(d.status)));
 }
 async function stopCountdown(reset=true, roomOverride=null){
   // Tunggu konfirmasi backend agar aksi reset tidak hanya mengubah tampilan.

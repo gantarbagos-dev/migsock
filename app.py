@@ -1633,56 +1633,96 @@ async def _start_kick_job_backend(session_id, data):
     return job_id
 
 def _countdown_event_info(payload):
-    """Normalize supported upstream shapes without relying on browser relay."""
+    """Normalize common upstream event envelopes without relying on browser relay."""
     if not isinstance(payload, dict):
         return None
-    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
-    data = event.get("data") if isinstance(event.get("data"), dict) else _event_payload_dict(event)
-    typ = str(event.get("type", data.get("type", data.get("event_type", "")))).strip().lower()
-    room = str(event.get("room", data.get("room", data.get("room_name", "")))).strip()
-    status = " ".join(str(value or "") for value in (
-        event.get("status_message"), data.get("status_message"),
-        event.get("message"), data.get("message"), event.get("text"), data.get("text"),
-        event.get("status"), data.get("status")))
-    status = status.strip().lower()
-    # Keep the same event type and phrase requirement; accept common payload
-    # field placements so a valid upstream event is not silently missed.
-    if typ != "room.kick.state" or "a vote to kick" not in status:
-        return None
-    return room, status
+
+    # Upstream messages may wrap the event at event, data.event, or data.data.
+    candidates = []
+    def add_candidate(value):
+        if isinstance(value, dict) and value not in candidates:
+            candidates.append(value)
+    add_candidate(payload)
+    add_candidate(payload.get("event"))
+    outer_data = payload.get("data")
+    add_candidate(outer_data)
+    if isinstance(outer_data, dict):
+        add_candidate(outer_data.get("event"))
+        add_candidate(outer_data.get("data"))
+        nested = outer_data.get("data")
+        if isinstance(nested, dict):
+            add_candidate(nested.get("event"))
+
+    for event in candidates:
+        data = event.get("data") if isinstance(event.get("data"), dict) else event
+        typ = str(event.get("type", data.get("type", data.get("event_type", payload.get("type", ""))))).strip().lower()
+        action = str(event.get("action", data.get("action", payload.get("action", "")))).strip().lower()
+        room = str(event.get("room", data.get("room", data.get("room_name",
+                    payload.get("room", outer_data.get("room", "") if isinstance(outer_data, dict) else ""))))).strip()
+        status = " ".join(str(value or "") for value in (
+            event.get("status_message"), data.get("status_message"),
+            event.get("message"), data.get("message"), event.get("text"), data.get("text"),
+            event.get("status"), data.get("status"), payload.get("status_message")))
+        status = status.strip().lower()
+        is_vote_start = typ == "room.kick.state" and action == "vote_started"
+        has_vote_phrase = "a vote to kick" in status
+        has_remaining = bool(re.search(r"\b\d+\s*(?:s|sec|secs|second|seconds)\s+remaining\b", status, re.I))
+        if typ == "room.kick.state" and (has_vote_phrase or (is_vote_start and has_remaining)):
+            return room, status
+    return None
 
 def _event_remaining_ms(payload):
+    """Extract vote time from the same nested envelopes used by event detection."""
     if not isinstance(payload, dict):
         return 60000
-    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
-    data = event.get("data") if isinstance(event.get("data"), dict) else _event_payload_dict(event)
-    candidates = [event.get("status_message"), data.get("status_message"),
-                  event.get("message"), data.get("message"), event.get("text"), data.get("text"),
-                  event.get("status"), data.get("status")]
-    for value in candidates:
-        match = re.search(r"\b(\d+)\s*(?:s|sec|secs|second|seconds)\s+remaining\.?", str(value or ""), re.I)
-        if match:
-            return max(0, min(60000, int(match.group(1)) * 1000))
-    for value in (event.get("remaining_ms"), data.get("remaining_ms"), payload.get("remaining_ms")):
-        try:
-            number = int(value)
-            if number >= 0:
-                return min(60000, number)
-        except (TypeError, ValueError):
-            pass
+    candidates = []
+    def add_candidate(value):
+        if isinstance(value, dict) and value not in candidates:
+            candidates.append(value)
+    add_candidate(payload)
+    add_candidate(payload.get("event"))
+    outer_data = payload.get("data")
+    add_candidate(outer_data)
+    if isinstance(outer_data, dict):
+        add_candidate(outer_data.get("event"))
+        add_candidate(outer_data.get("data"))
+        nested = outer_data.get("data")
+        if isinstance(nested, dict):
+            add_candidate(nested.get("event"))
+
+    for event in candidates:
+        data = event.get("data") if isinstance(event.get("data"), dict) else event
+        for value in (event.get("status_message"), data.get("status_message"),
+                      event.get("message"), data.get("message"), event.get("text"), data.get("text"),
+                      event.get("status"), data.get("status")):
+            match = re.search(r"\b(\d+)\s*(?:s|sec|secs|second|seconds)\s+remaining\b", str(value or ""), re.I)
+            if match:
+                return max(0, min(60000, int(match.group(1)) * 1000))
+        for value in (event.get("remaining_ms"), data.get("remaining_ms"), payload.get("remaining_ms")):
+            try:
+                number = int(value)
+                if number >= 0:
+                    return min(60000, number)
+            except (TypeError, ValueError):
+                pass
     return 60000
 
 async def _start_countdown_from_upstream_event(session_id, payload, received_mono=None, received_wall_ms=None):
     """Detect and schedule countdown directly from the upstream WS event on the VPS."""
     info = _countdown_event_info(payload)
     if not info:
+        event_type = str(payload.get("type", "")).lower() if isinstance(payload, dict) else ""
+        if "kick" in event_type:
+            print(f"[COUNTDOWN IGNORE] unsupported event envelope type={event_type!r}", flush=True)
         return False
     event_room, _status = info
     if not event_room:
+        print("[COUNTDOWN IGNORE] kick vote event has no room name", flush=True)
         return False
     room_key = _norm_room_key(event_room)
     config = COUNTDOWN_CONFIGS.get((session_id, room_key))
     if not config:
+        print(f"[COUNTDOWN IGNORE] no config for session={str(session_id)[:8]} room={event_room!r}; known_rooms={[v.get('room') for (sid, _), v in COUNTDOWN_CONFIGS.items() if sid == session_id]}", flush=True)
         return False
     now_mono = time.monotonic() if received_mono is None else received_mono
     now_wall_ms = int(time.time() * 1000) if received_wall_ms is None else received_wall_ms
