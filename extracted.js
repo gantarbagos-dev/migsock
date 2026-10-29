@@ -103,8 +103,6 @@ let autoTargetCycle=0;
 let participantExpected=new Set();
 let participantReceived=new Set();
 const COUNTDOWN_DEFAULT=60000;
-/* Countdown health indicator: green=backend connected, red=backend error, blue=triggered. */
-
 let countdownDeadline=0;
 let countdownTimer=null;
 let lastKickEventKey="";
@@ -141,123 +139,47 @@ function isKickEvent(m){
   return d.type==="room.kick.state" && d.status.includes("a vote to kick");
 }
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
-async function stopCountdown(reset=true, roomOverride=null){
-  // Tunggu konfirmasi backend agar aksi reset tidak hanya mengubah tampilan.
-  // Room kosong berarti hentikan seluruh countdown pada sesi pengguna ini.
-  countdownDeadline=0;
-  const room=roomOverride===null?roomEl.value.trim():String(roomOverride).trim();
-  try{
-    const response=await fetch('/api/countdown/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room}),cache:'no-store'});
-    const result=await response.json().catch(()=>({}));
-    if(!response.ok||result.ok===false)throw new Error(result.error||`HTTP ${response.status}`);
-    if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
-    countdownEl().dataset.timerBackend='connected';
-    countdownEl().title=room?`Countdown backend dihentikan untuk room ${room}.`:'Seluruh countdown backend pada sesi ini dihentikan.';
-    return result;
-  }catch(error){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='GAGAL RESET COUNTDOWN BACKEND: '+error.message;
-    log(0,'GAGAL reset countdown backend: '+error.message);
-    throw error;
-  }
-}
-async function resetCountdownTimer(){
-  try{
-    await stopCountdown(true);
-    lastKickEventKey='';
-    countdownKickTriggered=false;
-    log(0,'Countdown backend berhasil dihentikan; tampilan mengikuti status backend.');
-  }catch(_){/* Error sudah dicatat oleh stopCountdown. */}
-}
-function countdownRemainingFromEvent(m){
-  const d=kickEventData(m);
-  const candidates=[m?.status_message,m?.data?.status_message,m?.message,m?.data?.message,d.status];
-  for(const value of candidates){
-    const match=String(value??'').match(/\b(\d+)\s*(?:s|sec|secs|second|seconds)\s+remaining\.?/i);
-    if(match)return Math.max(0,Math.min(COUNTDOWN_DEFAULT,Number(match[1])*1000));
-  }
-  const n=Number(m?.remaining_ms??m?.data?.remaining_ms);
-  if(Number.isFinite(n)&&n>=0)return Math.min(COUNTDOWN_DEFAULT,n);
-  return COUNTDOWN_DEFAULT;
-}
-function countdownKickConfig(room){
-  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
-  return {room,targets,loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),
-    socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),
-    targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),
-    delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),
-    delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),
-    kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||100))};
-}
-async function syncCountdownConfig(){
-  const roomName=roomEl.value.trim();
-  if(!roomName)return false;
-  try{
-    const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
-    const kickConfig=countdownKickConfig(roomName);
-    const r=await fetch('/api/countdown/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room:roomName,timerKickall,kickConfig})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
-    return true;
-  }catch(e){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='GAGAL SINKRONISASI KONFIG TIMER BACKEND: '+e.message;
-    return false;
-  }
-}
-let countdownStatusRoom='';
-let countdownPollBusy=false;
-async function pollCountdownBackend(){
-  if(countdownPollBusy)return;
-  const roomName=roomEl.value.trim();
-  if(!roomName){
-    countdownStatusRoom='';
-    countdownEl().dataset.timerBackend='idle';
-    countdownEl().title='Pilih room untuk melihat timer backend.';
-    setCountdownValue(COUNTDOWN_DEFAULT);
-    return;
-  }
-  countdownPollBusy=true;
-  countdownStatusRoom=roomName;
-  try{
-    const r=await fetch('/api/countdown/status?room='+encodeURIComponent(roomName),{cache:'no-store'});
-    const d=await r.json();
-    if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
-    if(!d.active){
-      countdownEl().dataset.timerBackend='connected';
-      countdownEl().title=`Sumber waktu: backend | Room: ${roomName} | Menunggu event pemicu.`;
-      setCountdownValue(COUNTDOWN_DEFAULT);
-      countdownKickTriggered=false;
-      return;
-    }
-    countdownEl().dataset.timerBackend=d.error?'error':(d.triggered?'triggered':'connected');
-    countdownEl().title=d.error?('MASALAH TIMER BACKEND: '+d.error):`Sumber waktu: backend | Room: ${d.room||roomName} | Sisa ${d.remainingMs} ms | Keterlambatan pemicu ${d.lateByMs||0} ms | Status: ${d.triggered?'job sudah dipicu':'menghitung'}${d.jobId?' | Job '+d.jobId:''}`;
-    // Nilai yang ditampilkan berasal langsung dari /api/countdown/status,
-    // bukan hitungan lokal browser. Termasuk menampilkan 0 setelah jatuh tempo.
-    setCountdownValue(d.remainingMs);
-    countdownKickTriggered=Boolean(d.triggered);
-  }catch(e){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='TIMER BACKEND TIDAK TERJANGKAU: '+e.message;
-  }finally{
-    countdownPollBusy=false;
-  }
-}
-async function startCountdownFromKick(m){
-  // Event frontend hanya mempercepat refresh tampilan. Timer otoritatif dibuat
-  // oleh backend setelah backend menerima event upstream.
-  const eventRoom=kickEventData(m).room;
+function stopCountdown(reset=true){if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}countdownDeadline=0;if(reset)setCountdownValue(COUNTDOWN_DEFAULT)}
+function resetCountdownTimer(){stopCountdown(true);lastKickEventKey="";countdownKickTriggered=false;log(0,"Countdown di-reset ke 60000 dan berhenti")}
+function startCountdownFromKick(m){
+  const room=kickEventData(m).room;
   const selected=roomEl.value.trim();
-  if(eventRoom&&selected&&eventRoom.toLowerCase()!==selected.toLowerCase())return;
-  lastKickEventKey=kickEventKey(m);
-  await pollCountdownBackend();
+  if(room && selected && room.toLowerCase()!==selected.toLowerCase())return;
+  const key=kickEventKey(m);
+  if(key===lastKickEventKey)return;
+  lastKickEventKey=key;
+  countdownKickTriggered=false;
+  if(countdownTimer)clearInterval(countdownTimer);
+  const duration=COUNTDOWN_DEFAULT;
+  // Use the VPS timestamp added when the event arrives from the upstream API.
+  // Date.now() lets us subtract time spent relaying the event to this browser.
+  const serverTimestamp=Number(m?._server_timestamp_ms);
+  const elapsedSinceServer=Number.isFinite(serverTimestamp)&&serverTimestamp>0
+    ? Math.max(0,Date.now()-serverTimestamp) : 0;
+  const startedAt=performance.now()-elapsedSinceServer;
+  countdownDeadline=startedAt+duration;
+  setCountdownValue(Math.max(0,duration-elapsedSinceServer));
+  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:""}. Countdown berbasis timestamp server; sisa awal ${Math.max(0,duration-elapsedSinceServer)} ms`);
+  const tick=()=>{
+    const remaining=Math.max(0,countdownDeadline-performance.now());
+    setCountdownValue(remaining);
+    const timerKickall=Math.max(0,Number(document.getElementById("timerKickall")?.value)||0);
+    if(!countdownKickTriggered && remaining<=timerKickall){
+      countdownKickTriggered=true;
+      log(0,`Countdown ${remaining} ms <= Timer KickAll ${timerKickall} ms → KICKALL TERPICU`);
+      kickAll();
+    }
+    if(remaining<=0){
+      clearInterval(countdownTimer);
+      countdownTimer=null;
+      countdownDeadline=0;
+      setCountdownValue(COUNTDOWN_DEFAULT);
+      log(0,"Countdown selesai: 0 → reset 60000 dan berhenti");
+    }
+  };
+  countdownTimer=setInterval(tick,25);
+  tick();
 }
-// Keep the backend's event matcher preconfigured. This is configuration sync only;
-// receiving/detecting the trigger event and advancing its deadline happen on the VPS.
-setInterval(()=>{syncCountdownConfig()},500);
-// Polling independen dari event frontend: angka countdown selalu dibaca dari backend.
-setInterval(()=>{pollCountdownBackend()},200);
-setTimeout(()=>{pollCountdownBackend()},0);
 
 function log(i,m){/* UI log removed */}
 function status(i,t,c){const e=document.getElementById(`status-${i}`);e.title=t;e.setAttribute("aria-label",t);e.className="status-balloon "+c}
