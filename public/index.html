@@ -691,6 +691,20 @@ function dispatchSocketEvent(m,i){
   if(m.type==="kick.socket.completed"){
     return;
   }
+  if(m.type==="kick.countdown.started" || m.type==="kick.countdown.update"){
+    if(!m.room || !roomEl.value.trim() || String(m.room).toLowerCase()===roomEl.value.trim().toLowerCase()) setCountdownValue(Number(m.remainingMs ?? m.durationMs ?? 60000));
+    return;
+  }
+  if(m.type==="kick.countdown.reset" || m.type==="kick.countdown.finished" || m.type==="kick.countdown.cancelled" || m.type==="kick.countdown.fired" || m.type==="kick.countdown.error"){
+    if(m.type!=="kick.countdown.fired") setCountdownValue(COUNTDOWN_DEFAULT);
+    if(m.type==="kick.countdown.error") log(0,"Backend countdown error: "+(m.error||"unknown"));
+    return;
+  }
+  if(m.type==="kick.job.started"){
+    kickRunning=true;
+    setKickButtonState(true);
+    return;
+  }
   if(m.type==="kick.job.finished"){
     kickRunning=false;
     setKickButtonState(false);
@@ -714,16 +728,12 @@ let autoTargetCycle=0;
 let participantExpected=new Set();
 let participantReceived=new Set();
 const COUNTDOWN_DEFAULT=60000;
-let countdownDeadline=0;
-let countdownTimer=null;
-let lastKickEventKey="";
-let countdownKickTriggered=false;
 function countdownEl(){return document.getElementById("countdown")}
 function setCountdownValue(v){countdownEl().value=String(Math.max(0,Math.round(v)))}
 function kickEventData(m){const d=m?.data&&typeof m.data==="object"?m.data:m||{};return {
   type:String(m?.type??d?.type??d?.event_type??"").toLowerCase(),
   action:String(m?.action??d?.action??"").toLowerCase(),
-  status:String(m?.status_message??d?.status_message??d?.message??"").toLowerCase(),
+  status:String(m?.status_message??m?.message??d?.status_message??d?.message??"").toLowerCase(),
   room:String(m?.room??d?.room??"").trim(),
   target:String(m?.target_username??d?.target_username??d?.username??d?.target??"").trim(),
   time:String(m?.time??d?.time??d?.timestamp??"").trim()
@@ -751,14 +761,11 @@ function isKickEvent(m){
 }
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
 function stopCountdown(reset=true){
-  if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}
-  countdownDeadline=0;
+  // Compatibility shim for existing logout/reset flow; no frontend timer exists.
   if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
 }
 function resetCountdownTimer(){
   stopCountdown(true);
-  lastKickEventKey='';
-  countdownKickTriggered=false;
   log(0,'Countdown di-reset ke 60000 dan berhenti');
 }
 function countdownRemainingFromEvent(m){
@@ -773,49 +780,20 @@ function countdownRemainingFromEvent(m){
   return COUNTDOWN_DEFAULT;
 }
 function startCountdownFromKick(m){
-  const room=kickEventData(m).room;
-  const selected=roomEl.value.trim();
-  if(room&&selected&&room.toLowerCase()!==selected.toLowerCase())return;
-  const key=kickEventKey(m);
-  if(key===lastKickEventKey)return;
-  lastKickEventKey=key;
-  countdownKickTriggered=false;
-  if(countdownTimer)clearInterval(countdownTimer);
-  const duration=countdownRemainingFromEvent(m);
-  const receivedAt=performance.now();
-  countdownDeadline=receivedAt+duration;
-  setCountdownValue(duration);
-  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:''}. Countdown ${duration} ms`);
-
-  // Use a monotonic deadline, not repeated subtraction, so delayed interval
-  // callbacks and background-tab pauses do not accumulate countdown drift.
-  // The event has no guaranteed monotonic source timestamp, so do not invent
-  // a fixed network-delay correction.
-  const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
-  let expectedTickAt=receivedAt+25;
-  let maxTickLateness=0;
-  const tick=()=>{
-    const now=performance.now();
-    if(now>expectedTickAt)maxTickLateness=Math.max(maxTickLateness,now-expectedTickAt);
-    expectedTickAt=now+25;
-    const remaining=Math.max(0,countdownDeadline-now);
-    countdownEl().dataset.tickLatenessMs=String(Math.round(maxTickLateness));
-    setCountdownValue(remaining);
-    if(!countdownKickTriggered && remaining<=timerKickall){
-      countdownKickTriggered=true;
-      log(0,`Countdown frontend mencapai Timer KickAll (${timerKickall} ms); menjalankan KickAll`);
-      void kickAll();
-    }
-    if(remaining<=0){
-      clearInterval(countdownTimer);
-      countdownTimer=null;
-      countdownDeadline=0;
-      setCountdownValue(COUNTDOWN_DEFAULT);
-      log(0,'Countdown frontend selesai');
-    }
-  };
-  countdownTimer=setInterval(tick,25);
-  tick();
+  // Event is forwarded for visibility only. The backend owns the deadline and trigger.
+  log(0,'Event kick diterima; countdown dan pemicu KickAll dikelola backend');
+}
+async function syncBackendAutoConfig(){
+  try{
+    const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
+    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||100))};
+    await fetch('/api/kick-auto-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg),cache:'no-store'});
+  }catch(_){/* config sync is retried on the next cycle */}
+}
+function resetCountdownTimer(){
+  setCountdownValue(COUNTDOWN_DEFAULT);
+  fetch('/api/kick-auto-reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room:getRoom()}),cache:'no-store'}).catch(()=>{});
+  log(0,'Reset countdown diminta ke backend');
 }
 
 function log(i,m){/* UI log removed */}
@@ -1309,8 +1287,6 @@ async function logoutAll(){
     troopResetGeneration++;
     resetSuicideFeature("LOGOUT ALL");
     stopCountdown(true);
-    lastKickEventKey="";
-    countdownKickTriggered=false;
     kickRunning=false;
     setKickButtonState(false);
     clearTroopClientState();
@@ -1499,6 +1475,7 @@ async function kickAll(){
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5));
   const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
+  await syncBackendAutoConfig();
   const resetGeneration=troopResetGeneration;
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
@@ -1941,7 +1918,7 @@ document.getElementById("headerLogout").onclick=async function(){
     button.disabled=false;
     alert(error.message||"Logout panel gagal. Silakan coba lagi.");
   }
-};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
+};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();void syncBackendAutoConfig();setInterval(syncBackendAutoConfig,1000);
 
 /* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
 (function(){
