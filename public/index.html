@@ -246,7 +246,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 .header-logout{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:42px;height:42px;min-height:42px;padding:9px;border:1px solid rgba(248,113,113,.35)!important;border-radius:13px;background:linear-gradient(145deg,rgba(190,24,93,.95),rgba(185,28,28,.95))!important;color:#fff!important;box-shadow:0 5px 16px rgba(185,28,28,.22)!important}
 .header-logout svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .header-logout:focus-visible{outline:2px solid #fca5a5;outline-offset:3px}
-\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n.socket-latency{font-size:11px;line-height:1.35;margin-top:4px;color:#94a3b8;white-space:nowrap}.socket-latency[data-state="good"]{color:#22c55e}.socket-latency[data-state="medium"]{color:#f59e0b}.socket-latency[data-state="slow"],.socket-latency[data-state="timeout"]{color:#ef4444}.socket-latency[data-state="pending"]{color:#60a5fa}</style>
+\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n</style>
 
 <style id="suicide-toggle-style">
 .suicide-toggle{display:block;box-sizing:border-box;width:100%;min-width:0;height:30px;padding:0 3px;border-radius:8px;border:1px solid rgba(100,116,139,.55);font-size:9px;font-weight:800;letter-spacing:0;line-height:1;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:clip;transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease}
@@ -363,7 +363,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   }
 }
 </style>
-<style>#countdown[data-timer-backend="connected"]{border-color:#22c55e!important;box-shadow:0 0 0 2px rgba(34,197,94,.18)!important}#countdown[data-timer-backend="triggered"]{border-color:#3b82f6!important;box-shadow:0 0 0 2px rgba(59,130,246,.2)!important}#countdown[data-timer-backend="error"]{border-color:#ef4444!important;box-shadow:0 0 0 2px rgba(239,68,68,.25)!important;background:#3b1018!important}#countdown[data-timer-backend="connecting"]{border-color:#f59e0b!important}</style>
 </head>
 <body>
 <div class="wrap">
@@ -540,7 +539,7 @@ tabSetting.onclick=()=>switchTab("setting");
 tabDuel.onclick=()=>switchTab("duel");
 tabFlat.onclick=()=>switchTab("flat");
 const N=10;
-const clients=Array.from({length:N},()=>({ws:null,loggedIn:false,inRoom:false,intentionalClose:false,balance:null,generation:0}));
+const clients=Array.from({length:N},()=>({ws:null,loggedIn:false,inRoom:false,pingTimer:null,intentionalClose:false,balance:null,generation:0}));
 const rows=document.getElementById("rows"),roomEl=document.getElementById("room"),userList=document.getElementById("userList"),targetList=document.getElementById("targetList"),userCount=document.getElementById("userCount"),targetCount=document.getElementById("targetCount"),saveLoadEl=document.getElementById("saveLoad");
 let confirmedKickedTargets=new Set();let kickRunning=false;let troopResetGeneration=0;let roomBatchGeneration=0;
 const SAVE_PREFIX="migsock_config_";
@@ -702,11 +701,11 @@ function dispatchSocketEvent(m,i){
   if(isKickEvent(m)){startCountdownFromKick(m)}
   if(handleParticipants(m,i))return;
   if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password},true)}
-  else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
+  else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");startPing(i);send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
   else if(m.type==="room.join.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.joined===true||m.success===true;if(ok){clients[i].inRoom=true;log(i,"ENTER ROOM OK");const r=roomEl.value.trim();if(r)send(i,{type:"room.participants",room:r},true)}else log(i,"ENTER ROOM RESULT "+JSON.stringify(m))}
   else if(m.type==="room.leave.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.left===true||m.success===true;if(ok){clients[i].inRoom=false;log(i,"LEAVE ROOM OK")}else log(i,"LEAVE ROOM RESULT "+JSON.stringify(m))}
-  else if(m.type==="session.replaced"){clients[i].loggedIn=false;clients[i].inRoom=false;status(i,"REPLACED","error")}
-  else if(m.type==="error"){clients[i].loggedIn=false;clients[i].inRoom=false;status(i,"ERROR","error");log(i,"API ERROR "+JSON.stringify(m))}
+  else if(m.type==="session.replaced"){clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"REPLACED","error")}
+  else if(m.type==="error"){clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"ERROR","error");log(i,"API ERROR "+JSON.stringify(m))}
 }
 
 let autoTargetLocked=false;
@@ -715,8 +714,6 @@ let autoTargetCycle=0;
 let participantExpected=new Set();
 let participantReceived=new Set();
 const COUNTDOWN_DEFAULT=60000;
-/* Countdown health indicator: green=backend connected, red=backend error, blue=triggered. */
-
 let countdownDeadline=0;
 let countdownTimer=null;
 let lastKickEventKey="";
@@ -753,33 +750,16 @@ function isKickEvent(m){
   return d.type==="room.kick.state" && d.status.includes("a vote to kick");
 }
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
-async function stopCountdown(reset=true, roomOverride=null){
-  // Tunggu konfirmasi backend agar aksi reset tidak hanya mengubah tampilan.
-  // Room kosong berarti hentikan seluruh countdown pada sesi pengguna ini.
+function stopCountdown(reset=true){
+  if(countdownTimer){clearInterval(countdownTimer);countdownTimer=null}
   countdownDeadline=0;
-  const room=roomOverride===null?roomEl.value.trim():String(roomOverride).trim();
-  try{
-    const response=await fetch('/api/countdown/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room}),cache:'no-store'});
-    const result=await response.json().catch(()=>({}));
-    if(!response.ok||result.ok===false)throw new Error(result.error||`HTTP ${response.status}`);
-    if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
-    countdownEl().dataset.timerBackend='connected';
-    countdownEl().title=room?`Countdown backend dihentikan untuk room ${room}.`:'Seluruh countdown backend pada sesi ini dihentikan.';
-    return result;
-  }catch(error){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='GAGAL RESET COUNTDOWN BACKEND: '+error.message;
-    log(0,'GAGAL reset countdown backend: '+error.message);
-    throw error;
-  }
+  if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
 }
-async function resetCountdownTimer(){
-  try{
-    await stopCountdown(true);
-    lastKickEventKey='';
-    countdownKickTriggered=false;
-    log(0,'Countdown backend berhasil dihentikan; tampilan mengikuti status backend.');
-  }catch(_){/* Error sudah dicatat oleh stopCountdown. */}
+function resetCountdownTimer(){
+  stopCountdown(true);
+  lastKickEventKey='';
+  countdownKickTriggered=false;
+  log(0,'Countdown di-reset ke 60000 dan berhenti');
 }
 function countdownRemainingFromEvent(m){
   const d=kickEventData(m);
@@ -792,84 +772,51 @@ function countdownRemainingFromEvent(m){
   if(Number.isFinite(n)&&n>=0)return Math.min(COUNTDOWN_DEFAULT,n);
   return COUNTDOWN_DEFAULT;
 }
-function countdownKickConfig(room){
-  const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
-  return {room,targets,loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),
-    socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),
-    targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),
-    delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),
-    delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),
-    kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||100))};
-}
-async function syncCountdownConfig(){
-  const roomName=roomEl.value.trim();
-  if(!roomName)return false;
-  try{
-    const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
-    const kickConfig=countdownKickConfig(roomName);
-    const r=await fetch('/api/countdown/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room:roomName,timerKickall,kickConfig})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
-    return true;
-  }catch(e){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='GAGAL SINKRONISASI KONFIG TIMER BACKEND: '+e.message;
-    return false;
-  }
-}
-let countdownStatusRoom='';
-let countdownPollBusy=false;
-async function pollCountdownBackend(){
-  if(countdownPollBusy)return;
-  const roomName=roomEl.value.trim();
-  if(!roomName){
-    countdownStatusRoom='';
-    countdownEl().dataset.timerBackend='idle';
-    countdownEl().title='Pilih room untuk melihat timer backend.';
-    setCountdownValue(COUNTDOWN_DEFAULT);
-    return;
-  }
-  countdownPollBusy=true;
-  countdownStatusRoom=roomName;
-  try{
-    const r=await fetch('/api/countdown/status?room='+encodeURIComponent(roomName),{cache:'no-store'});
-    const d=await r.json();
-    if(!r.ok||!d.ok)throw new Error(d.error||`HTTP ${r.status}`);
-    if(!d.active){
-      countdownEl().dataset.timerBackend='connected';
-      countdownEl().title=`Sumber waktu: backend | Room: ${roomName} | Menunggu event pemicu.`;
-      setCountdownValue(COUNTDOWN_DEFAULT);
-      countdownKickTriggered=false;
-      return;
-    }
-    countdownEl().dataset.timerBackend=d.error?'error':(d.triggered?'triggered':'connected');
-    countdownEl().title=d.error?('MASALAH TIMER BACKEND: '+d.error):`Sumber waktu: backend | Room: ${d.room||roomName} | Sisa ${d.remainingMs} ms | Keterlambatan pemicu ${d.lateByMs||0} ms | Status: ${d.triggered?'job sudah dipicu':'menghitung'}${d.jobId?' | Job '+d.jobId:''}`;
-    // Nilai yang ditampilkan berasal langsung dari /api/countdown/status,
-    // bukan hitungan lokal browser. Termasuk menampilkan 0 setelah jatuh tempo.
-    setCountdownValue(d.remainingMs);
-    countdownKickTriggered=Boolean(d.triggered);
-  }catch(e){
-    countdownEl().dataset.timerBackend='error';
-    countdownEl().title='TIMER BACKEND TIDAK TERJANGKAU: '+e.message;
-  }finally{
-    countdownPollBusy=false;
-  }
-}
-async function startCountdownFromKick(m){
-  // Event frontend hanya mempercepat refresh tampilan. Timer otoritatif dibuat
-  // oleh backend setelah backend menerima event upstream.
-  const eventRoom=kickEventData(m).room;
+function startCountdownFromKick(m){
+  const room=kickEventData(m).room;
   const selected=roomEl.value.trim();
-  if(eventRoom&&selected&&eventRoom.toLowerCase()!==selected.toLowerCase())return;
-  lastKickEventKey=kickEventKey(m);
-  await pollCountdownBackend();
+  if(room&&selected&&room.toLowerCase()!==selected.toLowerCase())return;
+  const key=kickEventKey(m);
+  if(key===lastKickEventKey)return;
+  lastKickEventKey=key;
+  countdownKickTriggered=false;
+  if(countdownTimer)clearInterval(countdownTimer);
+  const duration=countdownRemainingFromEvent(m);
+  const receivedAt=performance.now();
+  countdownDeadline=receivedAt+duration;
+  setCountdownValue(duration);
+  log(0,`EVENT KICK terdeteksi${room?` di room ${room}`:''}. Countdown ${duration} ms`);
+
+  // Use a monotonic deadline, not repeated subtraction, so delayed interval
+  // callbacks and background-tab pauses do not accumulate countdown drift.
+  // The event has no guaranteed monotonic source timestamp, so do not invent
+  // a fixed network-delay correction.
+  const timerKickall=Math.max(0,Number(document.getElementById('timerKickall')?.value)||0);
+  let expectedTickAt=receivedAt+25;
+  let maxTickLateness=0;
+  const tick=()=>{
+    const now=performance.now();
+    if(now>expectedTickAt)maxTickLateness=Math.max(maxTickLateness,now-expectedTickAt);
+    expectedTickAt=now+25;
+    const remaining=Math.max(0,countdownDeadline-now);
+    countdownEl().dataset.tickLatenessMs=String(Math.round(maxTickLateness));
+    setCountdownValue(remaining);
+    if(!countdownKickTriggered && remaining<=timerKickall){
+      countdownKickTriggered=true;
+      log(0,`Countdown frontend mencapai Timer KickAll (${timerKickall} ms); menjalankan KickAll`);
+      void kickAll();
+    }
+    if(remaining<=0){
+      clearInterval(countdownTimer);
+      countdownTimer=null;
+      countdownDeadline=0;
+      setCountdownValue(COUNTDOWN_DEFAULT);
+      log(0,'Countdown frontend selesai');
+    }
+  };
+  countdownTimer=setInterval(tick,25);
+  tick();
 }
-// Keep the backend's event matcher preconfigured. This is configuration sync only;
-// receiving/detecting the trigger event and advancing its deadline happen on the VPS.
-setInterval(()=>{syncCountdownConfig()},500);
-// Polling independen dari event frontend: angka countdown selalu dibaca dari backend.
-setInterval(()=>{pollCountdownBackend()},200);
-setTimeout(()=>{pollCountdownBackend()},0);
 
 function log(i,m){/* UI log removed */}
 function status(i,t,c){const e=document.getElementById(`status-${i}`);e.title=t;e.setAttribute("aria-label",t);e.className="status-balloon "+c}
@@ -1314,11 +1261,13 @@ function setPass(){
   log(0,`Password diisi untuk ${N} ID`);
 }
 function send(i,o,hideLog=false){const c=clients[i];if(!c.ws||c.ws.readyState!==WebSocket.OPEN){log(i,"Socket belum OPEN");return false}c.ws.send(JSON.stringify(o));if(hideLog)log(i,`SEND ${o.type}`);else log(i,"SEND "+JSON.stringify(o));return true}
+function stopPing(i){if(clients[i].pingTimer){clearInterval(clients[i].pingTimer);clients[i].pingTimer=null}}
+function startPing(i){stopPing(i);clients[i].pingTimer=setInterval(()=>{if(clients[i].loggedIn)send(i,{type:"ping"},true)},45000)}
 function logoutOne(i){
   const c=clients[i];
   c.generation++;
   c.intentionalClose=true;
-  
+  stopPing(i);
   c.loggedIn=false;c.inRoom=false;c.balance=null;
   setBalance(i,"—");
   const old=c.ws;c.ws=null;
@@ -1355,12 +1304,11 @@ let logoutAllPromise=null;
 async function logoutAll(){
   if(logoutAllPromise)return logoutAllPromise;
   logoutAllPromise=(async()=>{
-    let stopError=null, resetError=null;
     // Invalidate pending frontend work first so late responses/events cannot
     // restore a previous duel's state after logout has started.
     troopResetGeneration++;
     resetSuicideFeature("LOGOUT ALL");
-    try{await stopCountdown(true, "");}catch(e){stopError=e}
+    stopCountdown(true);
     lastKickEventKey="";
     countdownKickTriggered=false;
     kickRunning=false;
@@ -1373,7 +1321,8 @@ async function logoutAll(){
     for(let i=0;i<N;i++)logoutOne(i);
 
     // Stop all server-side scheduled/running jobs, then reset upstream sessions.
-    // Wait for requests to settle; do not continue after an arbitrary timeout.
+    // Wait for both requests to settle; do not continue after an arbitrary timeout.
+    let stopError=null, resetError=null;
     try{
       const stopResponse=await fetch("/api/kick-stop",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"});
       const stopResult=await stopResponse.json().catch(()=>({}));
@@ -1417,16 +1366,11 @@ async function runRoomBatchAction(action,room){
   }finally{if(batchGeneration===roomBatchGeneration)roomBatchAction=null}
 }
 function enterAll(){const room=getRoom();if(!room)return;void runRoomBatchAction("join",room)}
-async function leaveAll(){
-  // LEAVE ALL clears the backend countdown even if no room is selected.
+function leaveAll(){
+  // LEAVE ALL resets SUICIDE even if no room is currently selected.
   resetSuicideFeature("LEAVE ALL");
-  const room=getRoom();
-  try{await stopCountdown(true, room||"");lastKickEventKey="";countdownKickTriggered=false;}
-  catch(_){/* Keep going with the leave action; the backend reset failure is logged. */}
-  // Do not leave the previous room's countdown running after LEAVE ALL.
-  await stopKickAll();
-  if(!room)return;
-  void runRoomBatchAction("leave",room);
+  // Leave All always stops every active kick worker first.
+  stopKickAll();const room=getRoom();if(!room)return;void runRoomBatchAction("leave",room)
 }
 function extractUsers(m){
   let arr=m?.participants??m?.data?.participants??m?.users??m?.data?.users??m?.data?.members??m?.data?.list??m?.data?.results??m?.result?.participants??m?.result?.users??[];
@@ -1526,7 +1470,7 @@ function loginOne(i){
   const c=clients[i],x=cred(i);
   if(!x.username||!x.password){log(i,"Username/password kosong");return}
   const generation=++c.generation;
-  c.intentionalClose=false;c.loggedIn=false;c.inRoom=false;c.balance=null;setBalance(i,"—");
+  c.intentionalClose=false;c.loggedIn=false;c.inRoom=false;c.balance=null;setBalance(i,"—");stopPing(i);
   const previous=c.ws;c.ws=null;if(previous)try{previous.close(1000,"replace")}catch(e){}
   status(i,"CONNECTING","connecting");log(i,"Connecting local proxy...");
   const ws=new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);c.ws=ws;
@@ -1539,7 +1483,7 @@ function loginOne(i){
     dispatchSocketEvent(m,i);
   };
   ws.onerror=()=>{if(stale())return;status(i,"ERROR","error");log(i,"Local WebSocket proxy error")};
-  ws.onclose=e=>{if(stale())return;c.loggedIn=false;c.inRoom=false;if(!c.intentionalClose)status(i,"CLOSED","offline");log(i,`CLOSED code=${e.code} reason=${e.reason||"-"}`);if(c.ws===ws)c.ws=null};
+  ws.onclose=e=>{if(stale())return;stopPing(i);c.loggedIn=false;c.inRoom=false;if(!c.intentionalClose)status(i,"CLOSED","offline");log(i,`CLOSED code=${e.code} reason=${e.reason||"-"}`);if(c.ws===ws)c.ws=null};
 };
 async function kickAll(){
   if(kickRunning){
@@ -1578,17 +1522,15 @@ async function kickAll(){
   }
 }
 async function stopKickAll(){
-  // Jangan mengandalkan flag frontend: worker backend bisa masih aktif meski
-  // halaman kehilangan event job.finished atau state lokal sudah ter-reset.
-  const wasRunning=kickRunning;
+  if(!kickRunning)return;
   const room=getRoom();
   try{
-    const r=await fetch('/api/kick-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room}),cache:'no-store'});
+    const r=await fetch('/api/kick-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok||d.ok===false)throw new Error(d.error||`HTTP ${r.status}`);
     kickRunning=false;
     setKickButtonState(false);
-    if(wasRunning||(d.stopped??0)>0)log(0,`KICKALL dihentikan: ${d.stopped??0} job`);
+    log(0,`KICKALL dihentikan: ${d.stopped??0} job`);
   }catch(e){log(0,'STOP KICK ERROR: '+e.message)}
 }
 function setKickButtonState(running){
@@ -1871,7 +1813,7 @@ function collectKickSet(){
     socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delaySocketApplyEvery").value)||2)),
     targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delayTargetApplyEvery").value)||5)),
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
-    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||100,
+    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||50,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
     timerKickall:Number(document.getElementById("timerKickall").value)||0
