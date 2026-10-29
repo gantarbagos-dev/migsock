@@ -32,6 +32,8 @@ KICK_RATE_STATE = {}
 SESSION_BROWSERS = {}
 BROWSER_SESSION = {}
 BROWSER_CLIENTS = set()
+# Upstream sessions are kept alive after the browser control socket disconnects.
+DETACHED_UPSTREAM = {}
 
 
 def _current_user(request):
@@ -57,7 +59,10 @@ ACTIVE_KICK_JOBS = {}
 ACTIVE_KICK_TASKS = {}
 # Actual asyncio tasks, kept separately so LOGOUT ALL can cancel stale jobs.
 ACTIVE_KICK_TASK_HANDLES = {}
-# Delayed server-owned KickAll schedules: (session_id, room_key) -> task.
+# Backend-owned auto countdowns. UI may configure them, but timer execution is server-side.
+AUTO_KICK_CONFIGS = {}
+AUTO_KICK_TIMERS = {}
+AUTO_KICK_LAST_EVENT = {}
 
 def _norm_room_key(room):
     return str(room or "").strip().casefold()
@@ -222,12 +227,41 @@ def register_socket(session_id, username, ws):
     key = username.strip().casefold()
     if not key:
         return
+    current = SESSION_UPSTREAM.setdefault(session_id, {}).get(key)
+    if current is not None and current is not ws and not getattr(current, "closed", True):
+        # Replace stale/duplicate account sessions rather than retaining two upstreams.
+        asyncio.create_task(_close_upstream_resource(current))
     SESSION_UPSTREAM.setdefault(session_id, {})[key] = ws
     WS_SESSION[id(ws)] = session_id
-    # Keep a legacy global registry only for diagnostics/protection; kick jobs never use it.
     ACTIVE_UPSTREAM[(session_id, key)] = ws
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_STATE.setdefault(id(ws), {"timestamps": deque()})
+
+async def _close_upstream_resource(ws):
+    resource = DETACHED_UPSTREAM.pop(id(ws), None)
+    if resource:
+        task = resource.get("relay_task")
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        session = resource.get("session")
+    else:
+        session = None
+    try:
+        if ws is not None and not ws.closed:
+            await ws.close(code=1000, message=b"backend cleanup")
+    except Exception:
+        pass
+    sid = WS_SESSION.get(id(ws))
+    username = None
+    if sid:
+        for name, current in list(SESSION_UPSTREAM.get(sid, {}).items()):
+            if current is ws:
+                username = name
+                break
+    unregister_socket(sid, username, ws)
+    if session is not None and not session.closed:
+        await session.close()
 
 def unregister_socket(session_id, username, ws):
     if session_id:
@@ -368,6 +402,149 @@ async def publish_browser_event(session_id, payload):
 
 
 
+def _auto_kick_event_info(payload):
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    typ = str(payload.get("type", data.get("type", data.get("event_type", "")))).strip().lower()
+    status = str(payload.get("status_message", payload.get("message", data.get("status_message", data.get("message", ""))))).strip().lower()
+    room = str(payload.get("room", data.get("room", ""))).strip()
+    if typ != "room.kick.state" or "a vote to kick" not in status:
+        return None
+    duration_ms = 60000
+    candidates = (payload.get("status_message"), payload.get("message"), data.get("status_message"), data.get("message"), status)
+    for value in candidates:
+        match = re.search(r"\b(\d+)\s*(?:s|sec|secs|second|seconds)\s+remaining\.?", str(value or ""), re.I)
+        if match:
+            duration_ms = max(0, min(60000, int(match.group(1)) * 1000))
+            break
+    else:
+        remaining = payload.get("remaining_ms", data.get("remaining_ms"))
+        try:
+            if remaining is not None and int(remaining) >= 0:
+                duration_ms = min(60000, int(remaining))
+        except (TypeError, ValueError):
+            pass
+    return {"type": typ, "status": status, "room": room, "time": str(payload.get("time", data.get("time", data.get("timestamp", "")))), "duration_ms": duration_ms}
+
+async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + duration_ms / 1000.0
+    await publish_browser_event(session_id, {"type":"kick.countdown.started", "room":room_key, "durationMs":duration_ms, "triggerMs":trigger_ms, "deadlineMonotonic":deadline})
+    try:
+        while True:
+            remaining_ms = max(0, int((deadline - loop.time()) * 1000))
+            await publish_browser_event(session_id, {"type":"kick.countdown.update", "room":room_key, "remainingMs":remaining_ms, "triggerMs":trigger_ms})
+            if remaining_ms <= trigger_ms:
+                break
+            await asyncio.sleep(min(0.1, max(0.01, (remaining_ms-trigger_ms)/1000.0)))
+        cfg = AUTO_KICK_CONFIGS.get(session_id)
+        if not cfg or _norm_room_key(cfg.get("room")) != room_key:
+            print(f"[AUTO COUNTDOWN] config missing/room changed session={session_id[:8]} room={room_key!r}; not launching job", flush=True)
+            await publish_browser_event(session_id, {"type":"kick.countdown.finished", "room":room_key, "reason":"config_missing"})
+            return
+        # Re-check event generation and config immediately before launch.
+        current = AUTO_KICK_TIMERS.get((session_id, room_key))
+        if not current or current.get("event_key") != event_key:
+            return
+        result = _launch_kick_job(session_id, cfg)
+        status = result[1]
+        body = result[0]
+        if status != 202:
+            print(f"[AUTO COUNTDOWN] KickAll not started: {body.get('error','unknown')} room={cfg.get('room')!r}", flush=True)
+            await publish_browser_event(session_id, {"type":"kick.countdown.finished", "room":cfg.get("room"), "reason":body.get("error","kick_not_started")})
+        else:
+            print(f"[AUTO COUNTDOWN] fired room={cfg.get('room')!r} job={body.get('jobId')} remaining threshold={trigger_ms}ms", flush=True)
+            await publish_browser_event(session_id, {"type":"kick.countdown.fired", "room":cfg.get("room"), "jobId":body.get("jobId"), "triggerMs":trigger_ms})
+            await publish_browser_event(session_id, {"type":"kick.job.started", "room":cfg.get("room"), "jobId":body.get("jobId"), "automatic":True})
+    except asyncio.CancelledError:
+        await publish_browser_event(session_id, {"type":"kick.countdown.cancelled", "room":room_key})
+        raise
+    except Exception as exc:
+        print(f"[AUTO COUNTDOWN ERROR] session={session_id[:8]} room={room_key!r}: {exc!r}", flush=True)
+        await publish_browser_event(session_id, {"type":"kick.countdown.error", "room":room_key, "error":str(exc)[:300]})
+    finally:
+        current = AUTO_KICK_TIMERS.get((session_id, room_key))
+        if current and current.get("event_key") == event_key:
+            AUTO_KICK_TIMERS.pop((session_id, room_key), None)
+
+async def handle_auto_kick_event(payload, session_id):
+    info = _auto_kick_event_info(payload)
+    if not info or not session_id:
+        return
+    cfg = AUTO_KICK_CONFIGS.get(session_id)
+    if not isinstance(cfg, dict):
+        return
+    room = str(cfg.get("room", "")).strip()
+    if not room or (info["room"] and _norm_room_key(info["room"]) != _norm_room_key(room)):
+        return
+    room_key = _norm_room_key(room)
+    event_key = "|".join((info["type"], room_key, info["time"], info["status"]))
+    if AUTO_KICK_LAST_EVENT.get((session_id, room_key)) == event_key:
+        return
+    AUTO_KICK_LAST_EVENT[(session_id, room_key)] = event_key
+    old = AUTO_KICK_TIMERS.get((session_id, room_key))
+    if old and old.get("task") and not old["task"].done():
+        # A timer already active for this room is authoritative; repeated state
+        # messages with changing timestamps must not restart its deadline.
+        return
+    duration_ms = max(0, min(60000, int(info.get("duration_ms", cfg.get("countdownMs", 60000)))))
+    trigger_ms = max(0, min(duration_ms, int(cfg.get("timerKickall", 1500))))
+    task = asyncio.create_task(_run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms))
+    AUTO_KICK_TIMERS[(session_id, room_key)] = {"task":task, "event_key":event_key, "deadline":asyncio.get_running_loop().time()+duration_ms/1000.0}
+    print(f"[AUTO COUNTDOWN] started session={session_id[:8]} room={room!r} duration={duration_ms}ms trigger={trigger_ms}ms", flush=True)
+
+@require_auth
+async def configure_auto_kick(request):
+    try:
+        data = await request.json()
+        room = str(data.get("room", "")).strip()
+        targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
+        countdown_ms = max(0, min(60000, int(data.get("countdownMs", 60000))))
+        trigger_ms = max(0, min(countdown_ms, int(data.get("timerKickall", 1500))))
+        loops = max(1, min(100, int(data.get("loop", 1))))
+        limit = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 100))))
+        delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2) or 2)))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5) or 5)))
+        delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
+        kick_method = str(data.get("kickMethod", "5-2"))
+        if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
+            kick_method = "5-2"
+        if not room:
+            raise ValueError("Room wajib diisi")
+        if len(targets) > 500:
+            raise ValueError("Maksimal 500 target")
+        session_id = request.get("session_id")
+        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target, "kickMethod":kick_method}
+        return web.json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms})
+    except Exception as exc:
+        return web.json_response({"ok":False,"error":str(exc)}, status=400)
+
+@require_auth
+async def reset_auto_kick_countdown(request):
+    session_id = request.get("session_id")
+    room = ""
+    try:
+        data = await request.json() if request.can_read_body else {}
+        room = str(data.get("room", "")).strip() if isinstance(data, dict) else ""
+    except Exception:
+        pass
+    room_key = _norm_room_key(room) if room else None
+    cancelled = 0
+    for timer_key, timer_state in list(AUTO_KICK_TIMERS.items()):
+        if timer_key[0] != session_id or (room_key and timer_key[1] != room_key):
+            continue
+        task = timer_state.get("task") if isinstance(timer_state, dict) else None
+        if task and not task.done():
+            task.cancel(); cancelled += 1
+        AUTO_KICK_TIMERS.pop(timer_key, None)
+    for event_key in list(AUTO_KICK_LAST_EVENT.keys()):
+        if event_key[0] == session_id and (not room_key or event_key[1] == room_key):
+            AUTO_KICK_LAST_EVENT.pop(event_key, None)
+    await publish_browser_event(session_id, {"type":"kick.countdown.reset", "room":room, "cancelled":cancelled})
+    return web.json_response({"ok":True,"cancelled":cancelled})
+
 @require_auth
 async def stop_kick_loop(request):
     """Stop active KICK ALL jobs owned by this authenticated session.
@@ -437,19 +614,12 @@ async def stop_kick_loop(request):
     return web.json_response({"ok": True, "stopped": stopped})
 
 
-@require_auth
-async def kick_loop(request):
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
+def _launch_kick_job(session_id, data):
     room = str(data.get("room", "")).strip()
     targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
     try:
         loops = max(1, min(100, int(data.get("loop", 1))))
-        kick_limit_per_ws = min(
-            KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 100)))
-        )
+        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 100))))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery", 5)) or 5)))
@@ -458,33 +628,25 @@ async def kick_loop(request):
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
             kick_method = "5-2"
     except Exception:
-        return web.json_response({"ok": False, "error": "Parameter kick tidak valid"}, status=400)
+        return {"ok":False,"error":"Parameter kick tidak valid"}, 400
     if not room or not targets:
-        return web.json_response({"ok": False, "error": "Room dan TARGET wajib diisi"}, status=400)
-    session_id = request.get("session_id")
+        return {"ok":False,"error":"Room dan TARGET wajib diisi"}, 400
     socket_entries = session_sockets(session_id)
     own_ws_names = {name.casefold() for name, _ws in socket_entries}
     targets = [t for t in targets if t.casefold() not in own_ws_names]
     if not socket_entries:
-        return web.json_response({"ok": False, "error": "Tidak ada WebSocket yang aktif"}, status=409)
+        return {"ok":False,"error":"Tidak ada WebSocket yang aktif"}, 409
     if not targets:
-        return web.json_response({"ok": False, "error": "Semua target termasuk WebSocket milik session ini"}, status=400)
-
+        return {"ok":False,"error":"Semua target termasuk WebSocket milik session ini"}, 400
     room_key = _norm_room_key(room)
     job_key = (session_id, room_key)
     active = ACTIVE_KICK_JOBS.get(job_key, [])
     if active or job_key in ACTIVE_KICK_TASKS:
-        active_ids = [x for x in ACTIVE_KICK_TASKS.get(job_key, [])] if isinstance(ACTIVE_KICK_TASKS.get(job_key), list) else []
-        return web.json_response({"ok": False, "error": "Masih ada job aktif untuk room ini", "active": True, "jobIds": active_ids}, status=409)
-
-    # The backend owns the job lifecycle. The HTTP request only starts the job;
-    # progress and completion are delivered through the persistent browser WS.
+        active_ids = list(ACTIVE_KICK_TASKS.get(job_key, [])) if isinstance(ACTIVE_KICK_TASKS.get(job_key), list) else []
+        return {"ok":False,"error":"Masih ada job aktif untuk room ini","active":True,"jobIds":active_ids}, 409
     job_id = uuid.uuid4().hex[:12]
     ACTIVE_KICK_TASKS[job_key] = [job_id]
-    task = asyncio.create_task(_run_kick_job(
-        job_id, session_id, room, list(targets), socket_entries, loops,
-        kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method
-    ))
+    task = asyncio.create_task(_run_kick_job(job_id, session_id, room, list(targets), socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
         current = ACTIVE_KICK_TASKS.get(job_key, [])
@@ -496,21 +658,22 @@ async def kick_loop(request):
         handles.pop(job_id, None)
         if not handles:
             ACTIVE_KICK_TASK_HANDLES.pop(job_key, None)
-        # A failed worker must not leave a stale job in this user's room.
         active_states = ACTIVE_KICK_JOBS.get(job_key, [])
         if active_states:
             ACTIVE_KICK_JOBS[job_key] = [state for state in active_states if state.get("jobId") != job_id]
             if not ACTIVE_KICK_JOBS[job_key]:
                 ACTIVE_KICK_JOBS.pop(job_key, None)
     task.add_done_callback(_job_done)
-    return web.json_response({
-        "ok": True, "accepted": True, "jobId": job_id,
-        "websockets": len(socket_entries), "targets": len(targets),
-        "loop": loops,
-        "kickLimitPerWs": kick_limit_per_ws,
-        "delaySocket": delay_socket, "socketApplyEvery": socket_apply_every, "delaySocketApplyEvery": socket_apply_every, "targetApplyEvery": target_apply_every, "delayTargetApplyEvery": target_apply_every, "delayTarget": delay_target, "kickMethod": kick_method, "dispatch": "asyncio.gather",
-        "transport": "browser-ws-events"
-    }, status=202)
+    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"kickMethod":kick_method,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
+
+@require_auth
+async def kick_loop(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
+    body, status = _launch_kick_job(request.get("session_id"), data)
+    return web.json_response(body, status=status)
 
 async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method):
     # Keep worker failures observable by the frontend instead of leaving a
@@ -697,6 +860,14 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 async def reset_troop_session(request):
     """Clear troop-side jobs/state without logging the browser application out."""
     session_id = request.get("session_id")
+    for timer_key, timer_state in list(AUTO_KICK_TIMERS.items()):
+        if timer_key[0] == session_id:
+            task = timer_state.get("task") if isinstance(timer_state, dict) else None
+            if task and not task.done(): task.cancel()
+            AUTO_KICK_TIMERS.pop(timer_key, None)
+    AUTO_KICK_CONFIGS.pop(session_id, None)
+    for event_key in list(AUTO_KICK_LAST_EVENT.keys()):
+        if event_key[0] == session_id: AUTO_KICK_LAST_EVENT.pop(event_key, None)
     cancelled = 0
     tasks_to_wait = []
     for job_key in list(ACTIVE_KICK_JOBS.keys()):
@@ -738,7 +909,9 @@ async def reset_troop_session(request):
     sockets = list((SESSION_UPSTREAM.get(session_id) or {}).values())
     for ws in sockets:
         try:
-            if ws is not None and not ws.closed:
+            if id(ws) in DETACHED_UPSTREAM:
+                await _close_upstream_resource(ws)
+            elif ws is not None and not ws.closed:
                 await ws.close(code=1000, message=b"troop reset")
         except Exception:
             pass
@@ -829,7 +1002,22 @@ async def auth_login(request):
 
 
 async def auth_logout(request):
-    destroy_session(request.cookies.get(SESSION_COOKIE))
+    session_id = request.cookies.get(SESSION_COOKIE)
+    for timer_key, timer_state in list(AUTO_KICK_TIMERS.items()):
+        if timer_key[0] == session_id:
+            task = timer_state.get("task") if isinstance(timer_state, dict) else None
+            if task and not task.done(): task.cancel()
+            AUTO_KICK_TIMERS.pop(timer_key, None)
+    AUTO_KICK_CONFIGS.pop(session_id, None)
+    for ws in list((SESSION_UPSTREAM.get(session_id) or {}).values()):
+        try:
+            if id(ws) in DETACHED_UPSTREAM:
+                await _close_upstream_resource(ws)
+            elif ws is not None and not ws.closed:
+                await ws.close(code=1000, message=b"panel logout")
+        except Exception:
+            pass
+    destroy_session(session_id)
     response = web.json_response({"ok": True})
     response.del_cookie(SESSION_COOKIE, path="/")
     return response
@@ -1104,30 +1292,22 @@ async def proxy(request):
         async def upstream_to_browser():
             async for msg in upstream:
                 if msg.type == WSMsgType.TEXT:
-                    # Stamp each upstream event when the VPS receives it, so the
-                    # browser countdown can account for relay/network delay.
-                    try:
-                        event_payload = __import__("json").loads(msg.data)
-                        if isinstance(event_payload, dict):
-                            event_payload["_server_timestamp_ms"] = int(time.time() * 1000)
-                            event_payload["_server_monotonic_ms"] = int(time.monotonic() * 1000)
-                            forwarded_data = __import__("json").dumps(event_payload, separators=(",", ":"))
-                        else:
-                            forwarded_data = msg.data
-                    except Exception:
-                        forwarded_data = msg.data
-                    # Forward upstream data to the browser immediately. UI delivery
-                    # must not wait for confirmation bookkeeping/database work.
+                    # Forward upstream data unchanged. Countdown and its KickAll
+                    # trigger are owned entirely by the frontend; the backend does
+                    # not stamp, schedule, or maintain a countdown timer.
                     if not browser.closed:
-                        await browser.send_str(forwarded_data)
-                    else:
-                        break
+                        try:
+                            await browser.send_str(msg.data)
+                        except Exception:
+                            # Browser is a control/display client; upstream processing continues server-side.
+                            pass
 
                     # Preserve the existing confirmation behavior after forwarding.
                     # This reduces perceived frontend latency without changing the
                     # upstream message payload or kick dispatch timing.
                     try:
                         payload = __import__("json").loads(msg.data)
+                        await handle_auto_kick_event(payload, session_id)
                         confirmed = await mark_confirmed_kick(payload, session_id)
                         if confirmed:
                             await publish_browser_event(session_id, {
@@ -1139,7 +1319,11 @@ async def proxy(request):
                     except Exception:
                         pass
                 elif msg.type == WSMsgType.BINARY:
-                    await browser.send_bytes(msg.data)
+                    if not browser.closed:
+                        try:
+                            await browser.send_bytes(msg.data)
+                        except Exception:
+                            pass
                 elif msg.type == WSMsgType.PING:
                     await upstream.pong()
                 elif msg.type == WSMsgType.PONG:
@@ -1150,6 +1334,11 @@ async def proxy(request):
                 elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                     print(f"UPSTREAM END type={msg.type} exception={upstream.exception()!r}", flush=True)
                     break
+            if browser.closed and upstream is not None:
+                DETACHED_UPSTREAM.pop(id(upstream), None)
+                unregister_socket(session_id, upstream_username, upstream)
+                if session is not None and not session.closed:
+                    await session.close()
 
         relay_task = asyncio.create_task(upstream_to_browser())
 
@@ -1188,15 +1377,23 @@ async def proxy(request):
         if not browsers and session_id:
             SESSION_BROWSERS.pop(session_id, None)
         BROWSER_SESSION.pop(id(browser), None)
-        if relay_task is not None:
-            relay_task.cancel()
-            await asyncio.gather(relay_task, return_exceptions=True)
-        if upstream is not None:
-            unregister_socket(session_id, upstream_username, upstream)
-            if not upstream.closed:
-                await upstream.close()
-        if session is not None:
-            await session.close()
+        registered = False
+        if upstream is not None and session_id and upstream_username:
+            registered = SESSION_UPSTREAM.get(session_id, {}).get(upstream_username.strip().casefold()) is upstream
+        if registered and browser.closed and not upstream.closed:
+            # Browser disconnected, but the account socket stays owned by the backend.
+            DETACHED_UPSTREAM[id(upstream)] = {"session_id":session_id,"username":upstream_username,"ws":upstream,"session":session,"relay_task":relay_task}
+            print(f"[UPSTREAM DETACHED] session={session_id[:8]} username={upstream_username!r}; backend continues without browser", flush=True)
+        else:
+            if relay_task is not None:
+                relay_task.cancel()
+                await asyncio.gather(relay_task, return_exceptions=True)
+            if upstream is not None:
+                unregister_socket(session_id, upstream_username, upstream)
+                if not upstream.closed:
+                    await upstream.close()
+            if session is not None:
+                await session.close()
     return browser
 
 async def health(request):
@@ -1236,6 +1433,8 @@ app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
+app.router.add_post("/api/kick-auto-config", configure_auto_kick)
+app.router.add_post("/api/kick-auto-reset", reset_auto_kick_countdown)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
