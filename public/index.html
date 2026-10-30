@@ -783,12 +783,16 @@ function startCountdownFromKick(m){
   // Event is forwarded for visibility only. The backend owns the deadline and trigger.
   log(0,'Event kick diterima; countdown dan pemicu KickAll dikelola backend');
 }
+let autoConfigSyncBusy=false;
 async function syncBackendAutoConfig(){
+  if(autoConfigSyncBusy)return;
+  autoConfigSyncBusy=true;
   try{
     const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
     const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||100))};
     await fetch('/api/kick-auto-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg),cache:'no-store'});
   }catch(_){/* config sync is retried on the next cycle */}
+  finally{autoConfigSyncBusy=false;}
 }
 function resetCountdownTimer(){
   setCountdownValue(COUNTDOWN_DEFAULT);
@@ -1942,6 +1946,9 @@ document.getElementById("headerLogout").onclick=async function(){
   setUi(saved);
 })();
 
+// Keep the backend's auto-KickAll configuration current before room.kick.state arrives.
+syncBackendAutoConfig();
+setInterval(syncBackendAutoConfig,500);
 </script>
 
 <style id="kick-option-b-inline-controls-final">
