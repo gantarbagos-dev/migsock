@@ -429,32 +429,60 @@ def _auto_kick_event_info(payload):
 
 async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline):
     loop = asyncio.get_running_loop()
-    await publish_browser_event(session_id, {"type":"kick.countdown.started", "room":room_key, "durationMs":duration_ms, "triggerMs":trigger_ms, "deadlineMonotonic":deadline})
-    try:
+    trigger_deadline = deadline - (trigger_ms / 1000.0)
+    update_task = None
+
+    async def publish_countdown_updates():
+        # UI updates are deliberately isolated from the trigger path. Any time
+        # spent publishing to the browser is already reflected by the absolute
+        # monotonic deadline and cannot postpone the KickAll decision.
+        await publish_browser_event(session_id, {
+            "type":"kick.countdown.started", "room":room_key,
+            "durationMs":duration_ms, "triggerMs":trigger_ms,
+            "deadlineMonotonic":deadline,
+        })
         while True:
             remaining_ms = max(0, int((deadline - loop.time()) * 1000 + 0.999))
-            await publish_browser_event(session_id, {"type":"kick.countdown.update", "room":room_key, "remainingMs":remaining_ms, "triggerMs":trigger_ms})
+            await publish_browser_event(session_id, {
+                "type":"kick.countdown.update", "room":room_key,
+                "remainingMs":remaining_ms, "triggerMs":trigger_ms,
+            })
             if remaining_ms <= trigger_ms:
-                break
-            await asyncio.sleep(min(0.01, max(0.001, (remaining_ms-trigger_ms)/1000.0)))
+                return
+            await asyncio.sleep(0.01)
+
+    try:
+        update_task = asyncio.create_task(publish_countdown_updates())
+
+        # Wait against the original absolute monotonic deadline, not by
+        # subtracting nominal tick intervals. Scheduler stalls, event-loop
+        # load, and awaited work therefore accumulate as real elapsed time.
+        await asyncio.sleep(max(0.0, trigger_deadline - loop.time()))
+        actual_fire_time = loop.time()
+        lateness_ms = max(0.0, (actual_fire_time - trigger_deadline) * 1000.0)
+
         cfg = AUTO_KICK_CONFIGS.get(session_id)
         if not cfg or _norm_room_key(cfg.get("room")) != room_key:
             print(f"[AUTO COUNTDOWN] config missing/room changed session={session_id[:8]} room={room_key!r}; not launching job", flush=True)
             await publish_browser_event(session_id, {"type":"kick.countdown.finished", "room":room_key, "reason":"config_missing"})
             return
+
         # Re-check event generation and config immediately before launch.
         current = AUTO_KICK_TIMERS.get((session_id, room_key))
         if not current or current.get("event_key") != event_key:
             return
+
+        # Launch synchronously before awaiting any browser update. This keeps
+        # frontend delivery latency out of the critical KickAll trigger path.
         result = _launch_kick_job(session_id, cfg)
         status = result[1]
         body = result[0]
         if status != 202:
-            print(f"[AUTO COUNTDOWN] KickAll not started: {body.get('error','unknown')} room={cfg.get('room')!r}", flush=True)
+            print(f"[AUTO COUNTDOWN] KickAll not started: {body.get('error','unknown')} room={cfg.get('room')!r} lateness={lateness_ms:.1f}ms", flush=True)
             await publish_browser_event(session_id, {"type":"kick.countdown.finished", "room":cfg.get("room"), "reason":body.get("error","kick_not_started")})
         else:
-            print(f"[AUTO COUNTDOWN] fired room={cfg.get('room')!r} job={body.get('jobId')} remaining threshold={trigger_ms}ms", flush=True)
-            await publish_browser_event(session_id, {"type":"kick.countdown.fired", "room":cfg.get("room"), "jobId":body.get("jobId"), "triggerMs":trigger_ms})
+            print(f"[AUTO COUNTDOWN] fired room={cfg.get('room')!r} job={body.get('jobId')} trigger={trigger_ms}ms lateness={lateness_ms:.1f}ms", flush=True)
+            await publish_browser_event(session_id, {"type":"kick.countdown.fired", "room":cfg.get("room"), "jobId":body.get("jobId"), "triggerMs":trigger_ms, "latenessMs":round(lateness_ms, 1)})
             await publish_browser_event(session_id, {"type":"kick.job.started", "room":cfg.get("room"), "jobId":body.get("jobId"), "automatic":True})
     except asyncio.CancelledError:
         await publish_browser_event(session_id, {"type":"kick.countdown.cancelled", "room":room_key})
@@ -463,6 +491,12 @@ async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trig
         print(f"[AUTO COUNTDOWN ERROR] session={session_id[:8]} room={room_key!r}: {exc!r}", flush=True)
         await publish_browser_event(session_id, {"type":"kick.countdown.error", "room":room_key, "error":str(exc)[:300]})
     finally:
+        if update_task and not update_task.done():
+            update_task.cancel()
+            try:
+                await update_task
+            except asyncio.CancelledError:
+                pass
         current = AUTO_KICK_TIMERS.get((session_id, room_key))
         if current and current.get("event_key") == event_key:
             AUTO_KICK_TIMERS.pop((session_id, room_key), None)
@@ -1292,9 +1326,17 @@ async def proxy(request):
         async def upstream_to_browser():
             async for msg in upstream:
                 if msg.type == WSMsgType.TEXT:
-                    # Forward upstream data unchanged. Countdown and its KickAll
-                    # trigger are owned entirely by the frontend; the backend does
-                    # not stamp, schedule, or maintain a countdown timer.
+                    # Process the automatic KickAll event before forwarding the
+                    # upstream message, so browser delivery latency cannot delay
+                    # the backend countdown start.
+                    payload = None
+                    try:
+                        payload = __import__("json").loads(msg.data)
+                        await handle_auto_kick_event(payload, session_id)
+                    except Exception:
+                        pass
+
+                    # Forward upstream data unchanged after backend event handling.
                     if not browser.closed:
                         try:
                             await browser.send_str(msg.data)
@@ -1302,22 +1344,19 @@ async def proxy(request):
                             # Browser is a control/display client; upstream processing continues server-side.
                             pass
 
-                    # Preserve the existing confirmation behavior after forwarding.
-                    # This reduces perceived frontend latency without changing the
-                    # upstream message payload or kick dispatch timing.
-                    try:
-                        payload = __import__("json").loads(msg.data)
-                        await handle_auto_kick_event(payload, session_id)
-                        confirmed = await mark_confirmed_kick(payload, session_id)
-                        if confirmed:
-                            await publish_browser_event(session_id, {
-                                "type": "kick.target.confirmed",
-                                "room": confirmed["room"],
-                                "target_username": confirmed["target"],
-                                "source_type": confirmed["type"],
-                            })
-                    except Exception:
-                        pass
+                    # Preserve the existing confirmation behavior.
+                    if payload is not None:
+                        try:
+                            confirmed = await mark_confirmed_kick(payload, session_id)
+                            if confirmed:
+                                await publish_browser_event(session_id, {
+                                    "type": "kick.target.confirmed",
+                                    "room": confirmed["room"],
+                                    "target_username": confirmed["target"],
+                                    "source_type": confirmed["type"],
+                                })
+                        except Exception:
+                            pass
                 elif msg.type == WSMsgType.BINARY:
                     if not browser.closed:
                         try:
