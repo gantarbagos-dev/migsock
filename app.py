@@ -427,17 +427,16 @@ def _auto_kick_event_info(payload):
             pass
     return {"type": typ, "status": status, "room": room, "time": str(payload.get("time", data.get("time", data.get("timestamp", "")))), "duration_ms": duration_ms}
 
-async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms):
+async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline):
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + duration_ms / 1000.0
     await publish_browser_event(session_id, {"type":"kick.countdown.started", "room":room_key, "durationMs":duration_ms, "triggerMs":trigger_ms, "deadlineMonotonic":deadline})
     try:
         while True:
-            remaining_ms = max(0, int((deadline - loop.time()) * 1000))
+            remaining_ms = max(0, int((deadline - loop.time()) * 1000 + 0.999))
             await publish_browser_event(session_id, {"type":"kick.countdown.update", "room":room_key, "remainingMs":remaining_ms, "triggerMs":trigger_ms})
             if remaining_ms <= trigger_ms:
                 break
-            await asyncio.sleep(min(0.1, max(0.01, (remaining_ms-trigger_ms)/1000.0)))
+            await asyncio.sleep(min(0.01, max(0.001, (remaining_ms-trigger_ms)/1000.0)))
         cfg = AUTO_KICK_CONFIGS.get(session_id)
         if not cfg or _norm_room_key(cfg.get("room")) != room_key:
             print(f"[AUTO COUNTDOWN] config missing/room changed session={session_id[:8]} room={room_key!r}; not launching job", flush=True)
@@ -490,8 +489,9 @@ async def handle_auto_kick_event(payload, session_id):
         return
     duration_ms = max(0, min(60000, int(info.get("duration_ms", cfg.get("countdownMs", 60000)))))
     trigger_ms = max(0, min(duration_ms, int(cfg.get("timerKickall", 1500))))
-    task = asyncio.create_task(_run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms))
-    AUTO_KICK_TIMERS[(session_id, room_key)] = {"task":task, "event_key":event_key, "deadline":asyncio.get_running_loop().time()+duration_ms/1000.0}
+    deadline = asyncio.get_running_loop().time() + duration_ms / 1000.0
+    task = asyncio.create_task(_run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline))
+    AUTO_KICK_TIMERS[(session_id, room_key)] = {"task":task, "event_key":event_key, "deadline":deadline}
     print(f"[AUTO COUNTDOWN] started session={session_id[:8]} room={room!r} duration={duration_ms}ms trigger={trigger_ms}ms", flush=True)
 
 @require_auth
