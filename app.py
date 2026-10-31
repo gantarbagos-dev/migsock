@@ -5,6 +5,7 @@ from collections import deque
 import uuid
 import re
 import time
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -427,7 +428,31 @@ def _auto_kick_event_info(payload):
             pass
     return {"type": typ, "status": status, "room": room, "time": str(payload.get("time", data.get("time", data.get("timestamp", "")))), "duration_ms": duration_ms}
 
-async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline):
+def _event_age_ms(event_time):
+    """Return event age using the VPS wall clock when the upstream timestamp is explicit."""
+    value = str(event_time or "").strip()
+    if not value:
+        return 0
+    try:
+        # Only trust millisecond-resolution epoch timestamps. Second-resolution
+        # timestamps can introduce up to ~1s of false lateness.
+        if re.fullmatch(r"\d{13}(?:\.\d+)?", value):
+            stamp_ms = float(value)
+            age = int(time.time() * 1000.0 - stamp_ms)
+            return max(0, min(86_400_000, age))
+        # ISO-8601 is used only when it carries fractional-second precision.
+        if not re.search(r"T\d{2}:\d{2}:\d{2}\.\d+", value):
+            return 0
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        stamp_ms = parsed.timestamp() * 1000.0
+        age = int(time.time() * 1000.0 - stamp_ms)
+        return max(0, min(86_400_000, age))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline, event_age_ms=0):
     loop = asyncio.get_running_loop()
     trigger_deadline = deadline - (trigger_ms / 1000.0)
     update_task = None
@@ -436,16 +461,19 @@ async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trig
         # UI updates are deliberately isolated from the trigger path. Any time
         # spent publishing to the browser is already reflected by the absolute
         # monotonic deadline and cannot postpone the KickAll decision.
+        remaining_ms = max(0, int((deadline - loop.time()) * 1000 + 0.999))
         await publish_browser_event(session_id, {
             "type":"kick.countdown.started", "room":room_key,
-            "durationMs":duration_ms, "triggerMs":trigger_ms,
-            "deadlineMonotonic":deadline,
+            "durationMs":duration_ms, "remainingMs":remaining_ms,
+            "triggerMs":trigger_ms, "eventAgeMs":event_age_ms,
+            "serverNowMs":time.time_ns() // 1_000_000,
         })
         while True:
             remaining_ms = max(0, int((deadline - loop.time()) * 1000 + 0.999))
             await publish_browser_event(session_id, {
                 "type":"kick.countdown.update", "room":room_key,
                 "remainingMs":remaining_ms, "triggerMs":trigger_ms,
+                "serverNowMs":time.time_ns() // 1_000_000,
             })
             if remaining_ms <= trigger_ms:
                 return
@@ -521,12 +549,18 @@ async def handle_auto_kick_event(payload, session_id):
         # A timer already active for this room is authoritative; repeated state
         # messages with changing timestamps must not restart its deadline.
         return
-    duration_ms = max(0, min(60000, int(info.get("duration_ms", cfg.get("countdownMs", 60000)))))
+    event_duration_ms = max(0, min(60000, int(info.get("duration_ms", cfg.get("countdownMs", 60000)))))
+    event_age_ms = _event_age_ms(info.get("time"))
+    # Translate the event's VPS-wall-clock age into a monotonic deadline once.
+    # All subsequent countdown math uses loop.time(), so wall-clock corrections
+    # cannot speed up, pause, or extend an already-running countdown.
+    duration_ms = max(0, event_duration_ms - event_age_ms)
     trigger_ms = max(0, min(duration_ms, int(cfg.get("timerKickall", 1500))))
-    deadline = asyncio.get_running_loop().time() + duration_ms / 1000.0
-    task = asyncio.create_task(_run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + duration_ms / 1000.0
+    task = asyncio.create_task(_run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline, event_age_ms))
     AUTO_KICK_TIMERS[(session_id, room_key)] = {"task":task, "event_key":event_key, "deadline":deadline}
-    print(f"[AUTO COUNTDOWN] started session={session_id[:8]} room={room!r} duration={duration_ms}ms trigger={trigger_ms}ms", flush=True)
+    print(f"[AUTO COUNTDOWN] started session={session_id[:8]} room={room!r} event_duration={event_duration_ms}ms event_age={event_age_ms}ms remaining={duration_ms}ms trigger={trigger_ms}ms", flush=True)
 
 @require_auth
 async def configure_auto_kick(request):
