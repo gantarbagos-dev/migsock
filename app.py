@@ -429,24 +429,24 @@ def _auto_kick_event_info(payload):
     return {"type": typ, "status": status, "room": room, "time": str(payload.get("time", data.get("time", data.get("timestamp", "")))), "duration_ms": duration_ms}
 
 def _event_age_ms(event_time):
-    """Return event age using the VPS wall clock when the upstream timestamp is explicit."""
+    """Estimate event age from an explicit upstream timestamp using VPS wall time.
+
+    Accept Unix timestamps (seconds or milliseconds) and timezone-aware ISO-8601.
+    Unparseable/ambiguous timestamps are treated as unknown, never guessed.
+    """
     value = str(event_time or "").strip()
     if not value:
         return 0
     try:
-        # Only trust millisecond-resolution epoch timestamps. Second-resolution
-        # timestamps can introduce up to ~1s of false lateness.
-        if re.fullmatch(r"\d{13}(?:\.\d+)?", value):
-            stamp_ms = float(value)
-            age = int(time.time() * 1000.0 - stamp_ms)
-            return max(0, min(86_400_000, age))
-        # ISO-8601 is used only when it carries fractional-second precision.
-        if not re.search(r"T\d{2}:\d{2}:\d{2}\.\d+", value):
-            return 0
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        stamp_ms = parsed.timestamp() * 1000.0
+        if re.fullmatch(r"\d{10,13}(?:\.\d+)?", value):
+            stamp = float(value)
+            stamp_ms = stamp if stamp >= 100_000_000_000 else stamp * 1000.0
+        else:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            # A timestamp without a timezone is ambiguous; do not assume UTC/local.
+            if parsed.tzinfo is None:
+                return 0
+            stamp_ms = parsed.timestamp() * 1000.0
         age = int(time.time() * 1000.0 - stamp_ms)
         return max(0, min(86_400_000, age))
     except (TypeError, ValueError, OverflowError):
@@ -551,9 +551,8 @@ async def handle_auto_kick_event(payload, session_id):
         return
     event_duration_ms = max(0, min(60000, int(info.get("duration_ms", cfg.get("countdownMs", 60000)))))
     event_age_ms = _event_age_ms(info.get("time"))
-    # Translate the event's VPS-wall-clock age into a monotonic deadline once.
-    # All subsequent countdown math uses loop.time(), so wall-clock corrections
-    # cannot speed up, pause, or extend an already-running countdown.
+    # Subtract time elapsed since the event was generated. Convert the adjusted
+    # duration to a monotonic deadline once; later wall-clock changes cannot move it.
     duration_ms = max(0, event_duration_ms - event_age_ms)
     trigger_ms = max(0, min(duration_ms, int(cfg.get("timerKickall", 1500))))
     loop = asyncio.get_running_loop()
