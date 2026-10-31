@@ -1922,7 +1922,7 @@ document.getElementById("headerLogout").onclick=async function(){
     button.disabled=false;
     alert(error.message||"Logout panel gagal. Silakan coba lagi.");
   }
-};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();void syncBackendAutoConfig();setInterval(syncBackendAutoConfig,1000);
+};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();
 
 /* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
 (function(){
@@ -1946,9 +1946,13 @@ document.getElementById("headerLogout").onclick=async function(){
   setUi(saved);
 })();
 
-// Keep the backend's auto-KickAll configuration current before room.kick.state arrives.
+// VPS is the sole clock and trigger authority. The browser only displays the
+// remainingMs values received from the backend. Sync config once immediately,
+// then every 500ms; a Timer KickAll edit is also pushed without waiting for a tick.
 syncBackendAutoConfig();
 setInterval(syncBackendAutoConfig,500);
+document.getElementById("timerKickall")?.addEventListener("input",syncBackendAutoConfig);
+document.getElementById("timerKickall")?.addEventListener("change",syncBackendAutoConfig);
 </script>
 
 <style id="kick-option-b-inline-controls-final">
