@@ -1122,7 +1122,7 @@ function collectKickSet(){
     version:1,
     delaySocket:Number(document.getElementById("delaySocket").value)||0,
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
-    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||100,
+    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||150,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
     timerKickall:Number(document.getElementById("timerKickall").value)||0
@@ -1131,7 +1131,7 @@ function collectKickSet(){
 function applyKickSet(cfg){
   document.getElementById("delaySocket").value=String(cfg.delaySocket??10);
   document.getElementById("delayTarget").value=String(cfg.delayTarget??10);
-  document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
+  document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??150)||150)));
   document.getElementById("loopKick").value=String(cfg.loopKick??45);
   
   document.getElementById("timerKickall").value=String(cfg.timerKickall??900);

@@ -570,7 +570,7 @@ async def configure_auto_kick(request):
         countdown_ms = max(0, min(60000, int(data.get("countdownMs", 60000))))
         trigger_ms = max(0, min(countdown_ms, int(data.get("timerKickall", 1500))))
         loops = max(1, min(100, int(data.get("loop", 1))))
-        limit = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 100))))
+        limit = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 150))))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2) or 2)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5) or 5)))
@@ -686,7 +686,7 @@ def _launch_kick_job(session_id, data):
     targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
     try:
         loops = max(1, min(100, int(data.get("loop", 1))))
-        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 100))))
+        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 150))))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery", 5)) or 5)))
