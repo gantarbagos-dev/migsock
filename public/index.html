@@ -495,7 +495,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     <div class="section-heading compact-heading"><div class="section-icon">⏱️</div><div class="field countdown-field"><input id="countdown" aria-label="Countdown" type="number" min="0" value="60000" readonly></div><button id="resetCountdown" class="reset-timer countdown-reset-inline" title="Reset Countdown ke 60000" aria-label="Reset Countdown ke 60000">↻</button></div>
     <div class="room-timer-row">
       <div class="field"><label for="timerKickall">Timer KickAll</label><input id="timerKickall" type="number" min="0" value="1500"></div>
-      <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="100"></div>
+      <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="150"></div>
     </div>
     <div class="duel-settings-row">
       <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="25"></div>
@@ -789,7 +789,7 @@ async function syncBackendAutoConfig(){
   autoConfigSyncBusy=true;
   try{
     const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
-    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||100))};
+    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
     await fetch('/api/kick-auto-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg),cache:'no-store'});
   }catch(_){/* config sync is retried on the next cycle */}
   finally{autoConfigSyncBusy=false;}
@@ -1794,7 +1794,7 @@ function collectKickSet(){
     socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delaySocketApplyEvery").value)||2)),
     targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delayTargetApplyEvery").value)||5)),
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
-    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||50,
+    kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||150,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
     timerKickall:Number(document.getElementById("timerKickall").value)||0
@@ -1805,7 +1805,7 @@ function applyKickSet(cfg){
   document.getElementById("delaySocketApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.socketApplyEvery??1)||1)));
   document.getElementById("delayTargetApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.targetApplyEvery??1)||1)));
   document.getElementById("delayTarget").value=String(cfg.delayTarget??20);
-  document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??100)||100)));
+  document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??150)||150)));
   document.getElementById("loopKick").value=String(cfg.loopKick??65);
   
   document.getElementById("timerKickall").value=String(cfg.timerKickall??1500);
