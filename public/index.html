@@ -1810,19 +1810,12 @@ function applyKickSet(cfg){
   
   document.getElementById("timerKickall").value=String(cfg.timerKickall??1500);
 }
-function saveKickSet(){
+async function saveKickSet(){
   const name=document.getElementById("saveLoadSet").value.trim() || "kickset";
   const safeName=name.replace(/[^a-zA-Z0-9_-]+/g,"_").replace(/^_+|_+$/g,"") || "kickset";
   const format=document.getElementById("saveLoadSetFormat").value;
   const blob=new Blob([JSON.stringify(collectKickSet(),null,2)],{type:format==="json"?"application/json":"text/plain"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");
-  a.href=url;
-  a.download=safeName.replace(/\.(json|txt)$/i,"")+"."+format;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  await saveBlobToPhoneFolder("set",safeName.replace(/\.(json|txt)$/i,"")+"."+format,blob);
 }
 function loadKickSet(){
   document.getElementById("loadSetFile").click();
@@ -1860,7 +1853,38 @@ function collectConfig(){
     accounts
   };
 }
-function saveConfig(){
+
+async function saveBlobToPhoneFolder(folderName,fileName,blob){
+  if(typeof window.showDirectoryPicker==="function"){
+    try{
+      const parent=await window.showDirectoryPicker({mode:"readwrite"});
+      const folder=await parent.getDirectoryHandle(folderName,{create:true});
+      const fileHandle=await folder.getFileHandle(fileName,{create:true});
+      const writable=await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      alert(`Berhasil disimpan ke folder ${folderName} di penyimpanan HP.`);
+      return true;
+    }catch(err){
+      if(err&&err.name==="AbortError")return false;
+      console.error("Penyimpanan folder HP gagal:",err);
+      alert("Tidak dapat menyimpan langsung ke folder. Pastikan browser memberi izin akses folder, lalu coba lagi.");
+      return false;
+    }
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+  alert("Browser HP ini tidak mendukung pemilihan folder langsung. File diunduh ke folder Download; pindahkan ke folder "+folderName+" secara manual.");
+  return false;
+}
+
+async function saveConfig(){
   const name=saveLoadEl.value.trim();
   if(!name){return}
   const range=getRange();
@@ -1868,14 +1892,7 @@ function saveConfig(){
   const cfg=collectConfig();
   const format=document.getElementById("saveLoadFormat").value;
   const blob=new Blob([JSON.stringify(cfg,null,2)],{type:format==="json"?"application/json":"text/plain"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");
-  a.href=url;
-  a.download=safeDownloadName(name)+"."+format;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  await saveBlobToPhoneFolder("migsock",safeDownloadName(name)+"."+format,blob);
 }
 function applyConfig(cfg){
   const accounts=Array.isArray(cfg.accounts)?cfg.accounts:[];
