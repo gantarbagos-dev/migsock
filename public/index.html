@@ -692,11 +692,14 @@ function dispatchSocketEvent(m,i){
     return;
   }
   if(m.type==="kick.countdown.started" || m.type==="kick.countdown.update"){
-    if(!m.room || !roomEl.value.trim() || String(m.room).toLowerCase()===roomEl.value.trim().toLowerCase()) setCountdownValue(Number(m.remainingMs ?? m.durationMs ?? 60000));
+    // Display countdown is driven locally from the original kick event.
+    // Backend updates are intentionally ignored so connection jitter cannot
+    // pause, jump, or restart the frontend timer.
     return;
   }
   if(m.type==="kick.countdown.reset" || m.type==="kick.countdown.finished" || m.type==="kick.countdown.cancelled" || m.type==="kick.countdown.fired" || m.type==="kick.countdown.error"){
-    if(m.type!=="kick.countdown.fired") setCountdownValue(COUNTDOWN_DEFAULT);
+    if(m.type==="kick.countdown.reset" || m.type==="kick.countdown.cancelled" || m.type==="kick.countdown.error") stopCountdown(true);
+    else stopCountdown(false);
     if(m.type==="kick.countdown.error") log(0,"Backend countdown error: "+(m.error||"unknown"));
     return;
   }
@@ -728,8 +731,32 @@ let autoTargetCycle=0;
 let participantExpected=new Set();
 let participantReceived=new Set();
 const COUNTDOWN_DEFAULT=60000;
+let frontendCountdownDeadline=0;
+let frontendCountdownInterval=null;
+let lastFrontendCountdownKey="";
+let lastFrontendCountdownStart=0;
 function countdownEl(){return document.getElementById("countdown")}
 function setCountdownValue(v){countdownEl().value=String(Math.max(0,Math.round(v)))}
+function renderFrontendCountdown(){
+  if(!frontendCountdownDeadline){setCountdownValue(COUNTDOWN_DEFAULT);return}
+  const remaining=Math.max(0,frontendCountdownDeadline-performance.now());
+  setCountdownValue(remaining);
+  if(remaining<=0){
+    frontendCountdownDeadline=0;
+    if(frontendCountdownInterval){clearInterval(frontendCountdownInterval);frontendCountdownInterval=null}
+  }
+}
+function startFrontendCountdown(durationMs,eventKey){
+  const now=performance.now();
+  if(eventKey && eventKey===lastFrontendCountdownKey && now-lastFrontendCountdownStart<5000)return;
+  lastFrontendCountdownKey=eventKey||"";
+  lastFrontendCountdownStart=now;
+  const duration=Math.max(0,Math.min(COUNTDOWN_DEFAULT,Number(durationMs)||COUNTDOWN_DEFAULT));
+  frontendCountdownDeadline=now+duration;
+  if(frontendCountdownInterval)clearInterval(frontendCountdownInterval);
+  renderFrontendCountdown();
+  frontendCountdownInterval=setInterval(renderFrontendCountdown,100);
+}
 function kickEventData(m){const d=m?.data&&typeof m.data==="object"?m.data:m||{};return {
   type:String(m?.type??d?.type??d?.event_type??"").toLowerCase(),
   action:String(m?.action??d?.action??"").toLowerCase(),
@@ -761,8 +788,9 @@ function isKickEvent(m){
 }
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
 function stopCountdown(reset=true){
-  // Compatibility shim for existing logout/reset flow; no frontend timer exists.
-  if(reset)setCountdownValue(COUNTDOWN_DEFAULT);
+  frontendCountdownDeadline=0;
+  if(frontendCountdownInterval){clearInterval(frontendCountdownInterval);frontendCountdownInterval=null}
+  setCountdownValue(reset?COUNTDOWN_DEFAULT:0);
 }
 function resetCountdownTimer(){
   stopCountdown(true);
@@ -780,8 +808,13 @@ function countdownRemainingFromEvent(m){
   return COUNTDOWN_DEFAULT;
 }
 function startCountdownFromKick(m){
-  // Event is forwarded for visibility only. The backend owns the deadline and trigger.
-  log(0,'Event kick diterima; countdown dan pemicu KickAll dikelola backend');
+  const d=kickEventData(m);
+  const eventKey=kickEventKey(m);
+  const duration=countdownRemainingFromEvent(m);
+  // Frontend display uses a monotonic local deadline, so it keeps counting
+  // smoothly even if the backend/WebSocket connection drops or updates arrive late.
+  startFrontendCountdown(duration,eventKey);
+  log(0,'Event kick diterima; countdown frontend berjalan lokal');
 }
 let autoConfigSyncBusy=false;
 async function syncBackendAutoConfig(){
