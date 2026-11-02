@@ -1880,7 +1880,6 @@ async function saveBlobToPhoneFolder(folderName,fileName,blob){
   a.click();
   a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1500);
-  alert("Browser HP ini tidak mendukung pemilihan folder langsung. File diunduh ke folder Download; pindahkan ke folder "+folderName+" secara manual.");
   return false;
 }
 
