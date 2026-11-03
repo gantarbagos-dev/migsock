@@ -1,2 +1,3 @@
 aiohttp>=3.9,<4
 uvloop>=0.21,<1; sys_platform != "win32"
+orjson>=3.10,<4

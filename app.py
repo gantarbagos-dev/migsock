@@ -14,7 +14,33 @@ try:
 except ImportError:  # Keep the app runnable if uvloop is unavailable.
     uvloop = None
 
+try:
+    import orjson
+except ImportError:  # Keep JSON handling functional if orjson is unavailable.
+    orjson = None
+    import json as _stdlib_json
+
 from aiohttp import web, ClientSession, ClientWSTimeout, WSMsgType
+
+
+def json_dumps(value):
+    """Serialize JSON to text for aiohttp HTTP and WebSocket APIs."""
+    if orjson is not None:
+        return orjson.dumps(value).decode("utf-8")
+    return _stdlib_json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_loads(value):
+    """Parse JSON using orjson when available, with a stdlib fallback."""
+    if orjson is not None:
+        return orjson.loads(value)
+    return _stdlib_json.loads(value)
+
+
+def json_response(*args, **kwargs):
+    """Use the selected fast serializer for all aiohttp JSON responses."""
+    kwargs.setdefault("dumps", json_dumps)
+    return web.json_response(*args, **kwargs)
 
 from auth import (
     SESSION_COOKIE, create_session, authenticate, destroy_session, get_session,
@@ -52,7 +78,7 @@ def require_auth(handler):
         user = _current_user(request)
         if not user:
             if request.path.startswith("/api/") or request.path == "/ws":
-                return web.json_response({"ok": False, "error": "Login diperlukan"}, status=401)
+                return json_response({"ok": False, "error": "Login diperlukan"}, status=401)
             raise web.HTTPFound("/login")
         request["user"] = user
         request["session_id"] = request.cookies.get(SESSION_COOKIE)
@@ -197,34 +223,36 @@ def find_config_file(filename):
 
 async def save_config_file(request):
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         filename = safe_config_filename(data.get("name"))
         cfg = data.get("config")
         if not isinstance(cfg, dict):
             raise ValueError("Config tidak valid")
         d = find_download_dir()
         if d is None:
-            return web.json_response({"ok": False, "error": "Folder konfigurasi tidak tersedia."}, status=500)
+            return json_response({"ok": False, "error": "Folder konfigurasi tidak tersedia."}, status=500)
         path = d / filename
-        import json
-        path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        return web.json_response({"ok": True, "filename": filename, "path": str(path)})
+        if orjson is not None:
+            serialized = orjson.dumps(cfg, option=orjson.OPT_INDENT_2).decode("utf-8")
+        else:
+            serialized = _stdlib_json.dumps(cfg, ensure_ascii=False, indent=2)
+        path.write_text(serialized, encoding="utf-8")
+        return json_response({"ok": True, "filename": filename, "path": str(path)})
     except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return json_response({"ok": False, "error": str(e)}, status=400)
 
 async def load_config_file(request):
     try:
         filename = safe_config_filename(request.query.get("name", ""))
         path = find_config_file(filename)
         if path is None:
-            return web.json_response({"ok": False, "error": f"File {filename} tidak ditemukan di Download."}, status=404)
-        import json
-        cfg = json.loads(path.read_text(encoding="utf-8"))
+            return json_response({"ok": False, "error": f"File {filename} tidak ditemukan di Download."}, status=404)
+        cfg = json_loads(path.read_text(encoding="utf-8"))
         if not isinstance(cfg, dict):
             raise ValueError("Isi file bukan config JSON")
-        return web.json_response({"ok": True, "filename": filename, "config": cfg})
+        return json_response({"ok": True, "filename": filename, "config": cfg})
     except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return json_response({"ok": False, "error": str(e)}, status=400)
 
 
 def register_socket(session_id, username, ws):
@@ -362,7 +390,7 @@ async def send_kick(ws, room, target, max_per_second=None):
         async with asyncio.timeout(KICK_SEND_TIMEOUT):
             if ws.closed:
                 return False
-            await ws.send_json(payload)
+            await ws.send_json(payload, dumps=json_dumps)
             return True
     except (asyncio.TimeoutError, ConnectionError, OSError):
         print(f"[KICK SEND TIMEOUT/ERROR] ws={wsid}", flush=True)
@@ -388,7 +416,7 @@ async def publish_browser_event(session_id, payload):
             return
         try:
             await asyncio.wait_for(
-                browser.send_json(payload),
+                browser.send_json(payload, dumps=json_dumps),
                 timeout=max(0.05, BROWSER_EVENT_TIMEOUT),
             )
         except Exception:
@@ -569,7 +597,7 @@ async def handle_auto_kick_event(payload, session_id):
 @require_auth
 async def configure_auto_kick(request):
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         room = str(data.get("room", "")).strip()
         targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
         countdown_ms = max(0, min(60000, int(data.get("countdownMs", 60000))))
@@ -589,16 +617,16 @@ async def configure_auto_kick(request):
             raise ValueError("Maksimal 500 target")
         session_id = request.get("session_id")
         AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target, "kickMethod":kick_method}
-        return web.json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms})
+        return json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms})
     except Exception as exc:
-        return web.json_response({"ok":False,"error":str(exc)}, status=400)
+        return json_response({"ok":False,"error":str(exc)}, status=400)
 
 @require_auth
 async def reset_auto_kick_countdown(request):
     session_id = request.get("session_id")
     room = ""
     try:
-        data = await request.json() if request.can_read_body else {}
+        data = await request.json(loads=json_loads) if request.can_read_body else {}
         room = str(data.get("room", "")).strip() if isinstance(data, dict) else ""
     except Exception:
         pass
@@ -615,7 +643,7 @@ async def reset_auto_kick_countdown(request):
         if event_key[0] == session_id and (not room_key or event_key[1] == room_key):
             AUTO_KICK_LAST_EVENT.pop(event_key, None)
     await publish_browser_event(session_id, {"type":"kick.countdown.reset", "room":room, "cancelled":cancelled})
-    return web.json_response({"ok":True,"cancelled":cancelled})
+    return json_response({"ok":True,"cancelled":cancelled})
 
 @require_auth
 async def stop_kick_loop(request):
@@ -628,7 +656,7 @@ async def stop_kick_loop(request):
     """
     session_id = request.get("session_id")
     try:
-        data = await request.json() if request.can_read_body else {}
+        data = await request.json(loads=json_loads) if request.can_read_body else {}
         if not isinstance(data, dict):
             data = {}
     except Exception:
@@ -683,7 +711,7 @@ async def stop_kick_loop(request):
         if not ACTIVE_KICK_JOBS.get(job_key):
             ACTIVE_KICK_JOBS.pop(job_key, None)
 
-    return web.json_response({"ok": True, "stopped": stopped})
+    return json_response({"ok": True, "stopped": stopped})
 
 
 def _launch_kick_job(session_id, data):
@@ -741,11 +769,11 @@ def _launch_kick_job(session_id, data):
 @require_auth
 async def kick_loop(request):
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
     except Exception:
-        return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
+        return json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
     body, status = _launch_kick_job(request.get("session_id"), data)
-    return web.json_response(body, status=status)
+    return json_response(body, status=status)
 
 async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method):
     # Keep worker failures observable by the frontend instead of leaving a
@@ -988,7 +1016,7 @@ async def reset_troop_session(request):
         except Exception:
             pass
     SESSION_UPSTREAM.pop(session_id, None)
-    return web.json_response({"ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets), "session": "troop-reset"})
+    return json_response({"ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets), "session": "troop-reset"})
 
 
 def require_admin(handler):
@@ -997,11 +1025,11 @@ def require_admin(handler):
         user = _current_user(request)
         if not user:
             if request.path.startswith("/api/"):
-                return web.json_response({"ok": False, "error": "Login diperlukan"}, status=401)
+                return json_response({"ok": False, "error": "Login diperlukan"}, status=401)
             raise web.HTTPFound("/login")
         if user.get("role") != "admin":
             if request.path.startswith("/api/"):
-                return web.json_response({"ok": False, "error": "Akses admin diperlukan"}, status=403)
+                return json_response({"ok": False, "error": "Akses admin diperlukan"}, status=403)
             raise web.HTTPForbidden(text="Akses admin diperlukan")
         request["user"] = user
         request["session_id"] = request.cookies.get(SESSION_COOKIE)
@@ -1023,16 +1051,16 @@ async def admin_page(request):
 
 async def auth_login(request):
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", ""))
     except Exception:
-        return web.json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
+        return json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
     if not username or not password:
-        return web.json_response({"ok": False, "error": "Username dan password wajib diisi"}, status=400)
+        return json_response({"ok": False, "error": "Username dan password wajib diisi"}, status=400)
     user = authenticate(username, password)
     if not user:
-        return web.json_response({"ok": False, "error": "Username atau password salah"}, status=401)
+        return json_response({"ok": False, "error": "Username atau password salah"}, status=401)
     device_id = None
     if user.get("role") != "admin":
         device_id = str(data.get("deviceId", ""))
@@ -1044,20 +1072,20 @@ async def auth_login(request):
                 request.headers.get("User-Agent", ""),
             )
         except ValueError as e:
-            return web.json_response({"ok": False, "error": str(e)}, status=400)
+            return json_response({"ok": False, "error": str(e)}, status=400)
         if device_status == "pending":
-            return web.json_response({
+            return json_response({
                 "ok": False, "devicePending": True,
                 "error": "Perangkat menunggu persetujuan admin. Silakan coba login kembali setelah disetujui.",
             }, status=403)
         if device_status == "rejected":
-            return web.json_response({"ok": False, "deviceRejected": True, "error": "Perangkat ditolak admin."}, status=403)
+            return json_response({"ok": False, "deviceRejected": True, "error": "Perangkat ditolak admin."}, status=403)
         if device_status == "revoked":
-            return web.json_response({"ok": False, "deviceRevoked": True, "error": "Akses perangkat telah dicabut admin."}, status=403)
+            return json_response({"ok": False, "deviceRevoked": True, "error": "Akses perangkat telah dicabut admin."}, status=403)
         if device_status != "approved":
-            return web.json_response({"ok": False, "error": "Kredensial perangkat tidak valid. Hapus data perangkat lokal lalu ajukan pendaftaran baru."}, status=403)
+            return json_response({"ok": False, "error": "Kredensial perangkat tidak valid. Hapus data perangkat lokal lalu ajukan pendaftaran baru."}, status=403)
     token = create_session(user, device_id=device_id)
-    response = web.json_response({"ok": True, "user": user})
+    response = json_response({"ok": True, "user": user})
     # Default: do not persist the login cookie beyond the browser session.
     # When "Simpan sesi login" is checked, persist it for the configured TTL.
     remember_session = data.get("rememberSession") is True
@@ -1090,7 +1118,7 @@ async def auth_logout(request):
         except Exception:
             pass
     destroy_session(session_id)
-    response = web.json_response({"ok": True})
+    response = json_response({"ok": True})
     response.del_cookie(SESSION_COOKIE, path="/")
     return response
 
@@ -1098,8 +1126,8 @@ async def auth_logout(request):
 async def auth_me(request):
     user = _current_user(request)
     if not user:
-        return web.json_response({"ok": False, "authenticated": False}, status=401)
-    return web.json_response({"ok": True, "authenticated": True, "user": user})
+        return json_response({"ok": False, "authenticated": False}, status=401)
+    return json_response({"ok": True, "authenticated": True, "user": user})
 
 
 UPDATE_DIR = ROOT.parent / "updates"
@@ -1125,20 +1153,20 @@ def _sha256_file(path):
 async def update_check(request):
     update_file = _latest_update_file()
     if update_file is None:
-        return web.json_response({"ok": True, "available": False, "up_to_date": True})
+        return json_response({"ok": True, "available": False, "up_to_date": True})
     digest = _sha256_file(update_file)
     # Native app/WebView may pass its installed APK SHA-256 as installedSha256.
     # A normal browser page cannot inspect the APK installed on the device.
     installed_hash = str(request.query.get("installedSha256", "")).strip().lower()
     if installed_hash and re.fullmatch(r"[a-f0-9]{64}", installed_hash) and installed_hash == digest:
-        return web.json_response({"ok": True, "available": False, "up_to_date": True, "message": "Your software already uptodate", "sha256": digest})
-    return web.json_response({"ok": True, "available": True, "up_to_date": False, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": digest, "url": "/api/update/download"})
+        return json_response({"ok": True, "available": False, "up_to_date": True, "message": "Your software already uptodate", "sha256": digest})
+    return json_response({"ok": True, "available": True, "up_to_date": False, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": digest, "url": "/api/update/download"})
 
 
 async def update_download(request):
     update_file = _latest_update_file()
     if update_file is None:
-        return web.json_response({"ok": True, "available": False, "message": "Your software already uptodate"}, status=404)
+        return json_response({"ok": True, "available": False, "message": "Your software already uptodate"}, status=404)
     return web.FileResponse(update_file, headers={"Content-Disposition": f'attachment; filename="{update_file.name}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
@@ -1152,7 +1180,7 @@ async def admin_update_upload(request):
         while field is not None and field.name != "file":
             field = await reader.next()
         if field is None or not field.filename:
-            return web.json_response({"ok": False, "error": "Pilih file APK/update terlebih dahulu"}, status=400)
+            return json_response({"ok": False, "error": "Pilih file APK/update terlebih dahulu"}, status=400)
 
         original = Path(field.filename.replace("\\", "/")).name
         filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original).strip(" .")[:180]
@@ -1170,19 +1198,19 @@ async def admin_update_upload(request):
                 total += len(chunk)
                 if total > UPDATE_MAX_BYTES:
                     temp_path.unlink(missing_ok=True)
-                    return web.json_response({"ok": False, "error": "Ukuran file maksimal 500 MB"}, status=413)
+                    return json_response({"ok": False, "error": "Ukuran file maksimal 500 MB"}, status=413)
                 digest.update(chunk)
                 out.write(chunk)
 
         if total == 0:
             temp_path.unlink(missing_ok=True)
-            return web.json_response({"ok": False, "error": "File kosong atau gagal dibaca browser"}, status=400)
+            return json_response({"ok": False, "error": "File kosong atau gagal dibaca browser"}, status=400)
 
         file_hash = digest.hexdigest()
         current = _latest_update_file()
         if current is not None and current.stat().st_size == total and _sha256_file(current) == file_hash:
             temp_path.unlink(missing_ok=True)
-            return web.json_response({"ok": True, "unchanged": True, "filename": current.name, "size": total, "sha256": file_hash})
+            return json_response({"ok": True, "unchanged": True, "filename": current.name, "size": total, "sha256": file_hash})
 
         # Publish atomically: don't remove the old update until the new file is fully received.
         target = UPDATE_DIR / filename
@@ -1190,15 +1218,15 @@ async def admin_update_upload(request):
             current.unlink(missing_ok=True)
         temp_path.replace(target)
         temp_path = None
-        return web.json_response({"ok": True, "filename": filename, "size": total, "sha256": file_hash})
+        return json_response({"ok": True, "filename": filename, "size": total, "sha256": file_hash})
     except web.HTTPRequestEntityTooLarge:
         if temp_path:
             temp_path.unlink(missing_ok=True)
-        return web.json_response({"ok": False, "error": "File terlalu besar. Batas unggahan 500 MB; periksa juga batas upload reverse proxy."}, status=413)
+        return json_response({"ok": False, "error": "File terlalu besar. Batas unggahan 500 MB; periksa juga batas upload reverse proxy."}, status=413)
     except Exception as e:
         if temp_path:
             temp_path.unlink(missing_ok=True)
-        return web.json_response({"ok": False, "error": f"Upload gagal: {type(e).__name__}: {str(e)[:240]}"}, status=500)
+        return json_response({"ok": False, "error": f"Upload gagal: {type(e).__name__}: {str(e)[:240]}"}, status=500)
 
 
 @require_admin
@@ -1206,37 +1234,37 @@ async def admin_update_delete(request):
     update_file = _latest_update_file()
     if update_file is not None:
         update_file.unlink(missing_ok=True)
-    return web.json_response({"ok": True, "deleted": update_file is not None})
+    return json_response({"ok": True, "deleted": update_file is not None})
 
 
 @require_admin
 async def admin_update_status(request):
     update_file = _latest_update_file()
     if update_file is None:
-        return web.json_response({"ok": True, "available": False})
-    return web.json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": _sha256_file(update_file)})
+        return json_response({"ok": True, "available": False})
+    return json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": _sha256_file(update_file)})
 
 
 @require_admin
 async def admin_change_password(request):
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         change_password(request["user"]["username"], str(data.get("password", "")))
-        return web.json_response({"ok": True})
+        return json_response({"ok": True})
     except ValueError as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return json_response({"ok": False, "error": str(e)}, status=400)
 
 
 @require_admin
 async def admin_users(request):
-    return web.json_response({"ok": True, "users": list_users()})
+    return json_response({"ok": True, "users": list_users()})
 
 
 @require_admin
 async def admin_session_settings(request):
     if request.method == "GET":
         ttl = get_session_ttl()
-        return web.json_response({
+        return json_response({
             "ok": True,
             "seconds": ttl,
             "minutes": ttl // 60,
@@ -1244,35 +1272,35 @@ async def admin_session_settings(request):
             "maxSeconds": SESSION_TTL_MAX,
         })
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         seconds = int(data.get("seconds"))
         ttl = set_session_ttl(seconds)
-        return web.json_response({"ok": True, "seconds": ttl, "minutes": ttl // 60})
+        return json_response({"ok": True, "seconds": ttl, "minutes": ttl // 60})
     except (TypeError, ValueError):
-        return web.json_response({"ok": False, "error": "Durasi session tidak valid"}, status=400)
+        return json_response({"ok": False, "error": "Durasi session tidak valid"}, status=400)
 
 
 @require_admin
 async def admin_create_user(request):
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         create_user(str(data.get("username", "")), str(data.get("password", "")), "user")
-        return web.json_response({"ok": True})
+        return json_response({"ok": True})
     except ValueError as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return json_response({"ok": False, "error": str(e)}, status=400)
     except Exception:
-        return web.json_response({"ok": False, "error": "Data user tidak valid"}, status=400)
+        return json_response({"ok": False, "error": "Data user tidak valid"}, status=400)
 
 
 @require_admin
 async def admin_set_user_enabled(request):
     username = request.match_info.get("username", "")
     try:
-        data = await request.json()
+        data = await request.json(loads=json_loads)
         set_enabled(username, bool(data.get("enabled")))
-        return web.json_response({"ok": True})
+        return json_response({"ok": True})
     except ValueError as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return json_response({"ok": False, "error": str(e)}, status=400)
 
 
 @require_admin
@@ -1280,14 +1308,14 @@ async def admin_delete_user(request):
     username = request.match_info.get("username", "")
     try:
         delete_user(username)
-        return web.json_response({"ok": True})
+        return json_response({"ok": True})
     except ValueError as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return json_response({"ok": False, "error": str(e)}, status=400)
 
 @require_admin
 async def admin_devices(request):
     status = str(request.query.get("status", "")).strip().lower()
-    return web.json_response({"ok": True, "devices": list_devices(status)})
+    return json_response({"ok": True, "devices": list_devices(status)})
 
 
 @require_admin
@@ -1295,9 +1323,9 @@ async def admin_delete_device(request):
     device_id = request.match_info.get("device_id", "")
     try:
         result = delete_device(device_id)
-        return web.json_response({"ok": True, "device": result})
+        return json_response({"ok": True, "device": result})
     except ValueError as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=404)
+        return json_response({"ok": False, "error": str(e)}, status=404)
 
 
 @require_admin
@@ -1307,12 +1335,12 @@ async def admin_device_action(request):
     status_map = {"approve": "approved", "reject": "rejected", "revoke": "revoked"}
     status = status_map.get(action)
     if not status:
-        return web.json_response({"ok": False, "error": "Aksi perangkat tidak valid"}, status=400)
+        return json_response({"ok": False, "error": "Aksi perangkat tidak valid"}, status=400)
     try:
         result = set_device_status(device_id, status, request["user"]["username"])
-        return web.json_response({"ok": True, "device": result})
+        return json_response({"ok": True, "device": result})
     except ValueError as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=404)
+        return json_response({"ok": False, "error": str(e)}, status=404)
 
 
 async def index(request):
@@ -1357,7 +1385,7 @@ async def proxy(request):
             detail = f"{type(last_error).__name__}: {last_error}" if last_error else "unknown error"
             payload = {"type":"proxy.error","data":{"stage":"upstream_connect","message":detail[:500]}}
             if not browser.closed:
-                await browser.send_json(payload)
+                await browser.send_json(payload, dumps=json_dumps)
                 await browser.close(code=1011, message=b"upstream connection failed")
             return browser
 
@@ -1369,7 +1397,7 @@ async def proxy(request):
                     # the backend countdown start.
                     payload = None
                     try:
-                        payload = __import__("json").loads(msg.data)
+                        payload = json_loads(msg.data)
                         await handle_auto_kick_event(payload, session_id)
                     except Exception:
                         pass
@@ -1422,10 +1450,10 @@ async def proxy(request):
         async for msg in browser:
             if msg.type == WSMsgType.TEXT:
                 if upstream.closed:
-                    await browser.send_json({"type":"proxy.error","data":{"stage":"upstream_send","message":"upstream socket is closed"}})
+                    await browser.send_json({"type":"proxy.error","data":{"stage":"upstream_send","message":"upstream socket is closed"}}, dumps=json_dumps)
                     break
                 try:
-                    payload = __import__("json").loads(msg.data)
+                    payload = json_loads(msg.data)
                     if payload.get("type") == "developer.login":
                         upstream_username = str(payload.get("username", "")).strip() or None
                         register_socket(session_id, upstream_username, upstream)
@@ -1443,7 +1471,7 @@ async def proxy(request):
         print(f"WebSocket proxy error: {type(e).__name__}: {e!r}", flush=True)
         if not browser.closed:
             try:
-                await browser.send_json({"type":"proxy.error","data":{"stage":"proxy","message":f"{type(e).__name__}: {e}"[:500]}})
+                await browser.send_json({"type":"proxy.error","data":{"stage":"proxy","message":f"{type(e).__name__}: {e}"[:500]}}, dumps=json_dumps)
             except Exception:
                 pass
             await browser.close(code=1011, message=b"proxy error")
@@ -1474,7 +1502,7 @@ async def proxy(request):
     return browser
 
 async def health(request):
-    return web.json_response({
+    return json_response({
         "ok": True,
         "service": "migsock",
         "port": PORT,
