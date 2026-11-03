@@ -1,1 +1,2 @@
 aiohttp>=3.9,<4
+uvloop>=0.21,<1; sys_platform != "win32"

@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
+try:
+    import uvloop
+except ImportError:  # Keep the app runnable if uvloop is unavailable.
+    uvloop = None
+
 from aiohttp import web, ClientSession, ClientWSTimeout, WSMsgType
 
 from auth import (
@@ -1511,6 +1516,16 @@ app.router.add_post("/api/kick-stop", stop_kick_loop)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
 
+def configure_event_loop():
+    """Use uvloop when installed; otherwise retain asyncio's default policy."""
+    if uvloop is None:
+        print("uvloop unavailable; using asyncio default event loop", flush=True)
+        return
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    print("uvloop event loop enabled", flush=True)
+
+
 if __name__ == "__main__":
+    configure_event_loop()
     print(f"migsock listening on 0.0.0.0:{PORT}", flush=True)
     web.run_app(app, host="0.0.0.0", port=PORT)
