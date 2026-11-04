@@ -1512,7 +1512,10 @@ async def health(request):
 
 init_auth_db()
 
-app = web.Application(client_max_size=UPDATE_MAX_BYTES + 16 * 1024 * 1024)
+app = web.Application(
+    client_max_size=UPDATE_MAX_BYTES + 16 * 1024 * 1024,
+    middlewares=[performance_middleware],
+)
 app.router.add_get("/", index)
 app.router.add_get("/login", login_page)
 app.router.add_get("/app", require_auth(app_page))
