@@ -1510,6 +1510,24 @@ async def health(request):
         "ws_path": "/ws",
     })
 
+@web.middleware
+async def performance_middleware(request, handler):
+    """
+    Measure request processing time without interfering with normal responses
+    or already-prepared WebSocket connections.
+    """
+    started = time.perf_counter()
+    response = await handler(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    # A WebSocketResponse may already be prepared when the handler returns.
+    # Headers cannot be modified after prepare(), so skip it in that case.
+    if not response.prepared:
+        response.headers["X-Response-Time"] = f"{elapsed_ms:.2f}ms"
+
+    return response
+
+
 init_auth_db()
 
 app = web.Application(
