@@ -343,7 +343,7 @@ def all_active_ws_usernames(exclude_session=None):
     return names
 
 
-async def send_kick(ws, room, target, max_per_second=None):
+async def send_kick(ws, room, target, max_per_second=None, serialized_payload=None):
     """Send one room.kick under a strict per-upstream-WebSocket sliding window.
 
     The limiter reserves a send attempt timestamp before writing to the socket.
@@ -381,16 +381,21 @@ async def send_kick(ws, room, target, max_per_second=None):
             wait_for = max(0.001, timestamps[0] + 1.0 - now)
         await asyncio.sleep(wait_for)
 
-    payload = {
-        "type": "room.kick",
-        "room": room,
-        "target_username": target,
-    }
+    # The caller may provide a job-scoped serialized payload shared by all
+    # WebSockets receiving this exact room/target command.
     try:
         async with asyncio.timeout(KICK_SEND_TIMEOUT):
             if ws.closed:
                 return False
-            await ws.send_json(payload, dumps=json_dumps)
+            if serialized_payload is None:
+                payload = {
+                    "type": "room.kick",
+                    "room": room,
+                    "target_username": target,
+                }
+                await ws.send_json(payload, dumps=json_dumps)
+            else:
+                await ws.send_str(serialized_payload)
             return True
     except (asyncio.TimeoutError, ConnectionError, OSError):
         print(f"[KICK SEND TIMEOUT/ERROR] ws={wsid}", flush=True)
@@ -801,6 +806,23 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
     immediate replacement fan-out.
     """
     room_key = _norm_room_key(room)
+    # Cache is deliberately scoped to this kick job/session. It avoids sharing
+    # payloads across users while allowing loop/replacement fan-out to reuse the
+    # same serialized room.kick message for the same target.
+    kick_payload_cache = {}
+
+    def get_serialized_kick_payload(target):
+        cache_key = (str(room), str(target))
+        serialized = kick_payload_cache.get(cache_key)
+        if serialized is None:
+            serialized = json_dumps({
+                "type": "room.kick",
+                "room": room,
+                "target_username": target,
+            })
+            kick_payload_cache[cache_key] = serialized
+        return serialized
+
     replacement_state = {
         "jobId": job_id,
         "sessionId": session_id,
@@ -818,7 +840,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         key = str(target or "").strip().casefold()
         return bool(key) and key in replacement_state["kicked"]
 
-    async def send_direct(ws_name, ws, target, is_replacement=False):
+    async def send_direct(ws_name, ws, target, serialized_payload, is_replacement=False):
         target_key = str(target or "").strip().casefold()
         if not target_key or ws is None or ws.closed:
             return False
@@ -827,9 +849,12 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 return False
         try:
             # The limiter may wait for a slot without the network-send timeout
-            # cancelling that wait. KICK_SEND_TIMEOUT is applied only around
-            # ws.send_json() inside send_kick().
-            result = await send_kick(ws, room, target, kick_limit_per_ws)
+            # cancelling that wait. The serialized payload is reused across all
+            # sockets for this target; send_kick applies the existing limiter.
+            result = await send_kick(
+                ws, room, target, kick_limit_per_ws,
+                serialized_payload=serialized_payload,
+            )
             return result is not False
         except Exception as exc:
             print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
@@ -845,10 +870,16 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         if not active:
             return 0
         tasks = []
+        # Serialize once for this room/target and reuse the exact JSON text for
+        # every upstream WebSocket in this fan-out (and later repeats).
+        serialized_payload = get_serialized_kick_payload(target)
         socket_interval = max(0, delay_socket) / 1000.0
         for index, (name, ws) in enumerate(active):
             tasks.append(asyncio.create_task(
-                send_direct(name, ws, target, is_replacement=is_replacement)
+                send_direct(
+                    name, ws, target, serialized_payload,
+                    is_replacement=is_replacement,
+                )
             ))
             # Apply Delay Socket after the selected number of socket starts.
             # Tasks already started remain in flight while the next group is delayed.
