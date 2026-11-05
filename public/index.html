@@ -645,6 +645,38 @@ function toggleSuicide(){
   renderSuicideToggle();
   log(0,`SUICIDE ${suicideEnabled?"ON":"OFF"}`);
 }
+// Cache serialized room.kick payloads by room + target so repeated sends
+// reuse the exact same compact JSON string instead of serializing per socket.
+const duelKickPayloadCache=new Map();
+function getDuelKickPayload(room,target){
+  const key=JSON.stringify([room,target]);
+  let payload=duelKickPayloadCache.get(key);
+  if(payload!==undefined){
+    duelKickPayloadCache.delete(key);
+    duelKickPayloadCache.set(key,payload);
+    return payload;
+  }
+  payload=JSON.stringify({type:"room.kick",room,target_username:target});
+  duelKickPayloadCache.set(key,payload);
+  if(duelKickPayloadCache.size>100){
+    const oldestKey=duelKickPayloadCache.keys().next().value;
+    duelKickPayloadCache.delete(oldestKey);
+  }
+  return payload;
+}
+function sendSerializedRoomKick(i,payload){
+  const c=clients[i];
+  if(!c.ws||c.ws.readyState!==WebSocket.OPEN){log(i,"Socket belum OPEN");return false;}
+  try{
+    c.ws.send(payload);
+    log(i,"SEND room.kick");
+    return true;
+  }catch(error){
+    log(i,"SEND room.kick ERROR: "+(error?.message||String(error)));
+    return false;
+  }
+}
+
 function triggerSuicideFromVote(msg){
   if(!suicideEnabled)return;
   const target=getSuicideVoteTarget(msg);if(!target)return;
@@ -666,9 +698,10 @@ function triggerSuicideFromVote(msg){
   if(suicideTriggeredKeys.has(key))return;
   suicideTriggeredKeys.add(key);
   let sent=0;
+  const kickPayload=getDuelKickPayload(room,matchedUsername);
   for(let i=0;i<N;i++){
     if(clients[i].loggedIn&&clients[i].ws?.readyState===WebSocket.OPEN){
-      if(send(i,{type:"room.kick",room,target_username:matchedUsername},true))sent++;
+      if(sendSerializedRoomKick(i,kickPayload))sent++;
     }
   }
   log(0,`SUICIDE: vote target ${matchedUsername}; dikirim melalui ${sent} WS aktif`);
