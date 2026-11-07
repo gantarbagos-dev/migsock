@@ -6,6 +6,9 @@ from collections import deque
 import uuid
 import re
 import time
+import socket
+import ssl
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -1534,12 +1537,59 @@ async def proxy(request):
     return browser
 
 async def upstream_latency(request):
-    """Measure one VPS-to-upstream WebSocket handshake and one JSON PING/PONG RTT."""
-    started = time.perf_counter()
+    """Measure one VPS-to-endpoint DNS/TCP/TLS/WebSocket connection and one PING/PONG RTT."""
     session = None
     upstream = None
+    probe_writer = None
     try:
+        parsed = urlsplit(API_URL)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+        if not host:
+            raise ValueError("Host endpoint tidak valid")
+
+        loop = asyncio.get_running_loop()
+
+        # One DNS sample.
+        dns_started = time.perf_counter()
+        addresses = await loop.getaddrinfo(
+            host, port, type=socket.SOCK_STREAM
+        )
+        dns_ms = round((time.perf_counter() - dns_started) * 1000, 1)
+        if not addresses:
+            raise OSError("DNS tidak mengembalikan alamat endpoint")
+
+        # One TCP-connect sample, followed by one TLS-handshake sample
+        # on the same diagnostic TCP socket.
+        family, socktype, proto, _, sockaddr = addresses[0]
+        probe_sock = socket.socket(family, socktype, proto)
+        probe_sock.setblocking(False)
+        try:
+            tcp_started = time.perf_counter()
+            await loop.sock_connect(probe_sock, sockaddr)
+            tcp_ms = round((time.perf_counter() - tcp_started) * 1000, 1)
+
+            tls_started = time.perf_counter()
+            probe_reader, probe_writer = await asyncio.open_connection(
+                sock=probe_sock,
+                ssl=ssl.create_default_context() if parsed.scheme == "wss" else None,
+                server_hostname=host if parsed.scheme == "wss" else None,
+            )
+            tls_ms = round((time.perf_counter() - tls_started) * 1000, 1) if parsed.scheme == "wss" else 0.0
+            probe_writer.close()
+            try:
+                await probe_writer.wait_closed()
+            except Exception:
+                pass
+            probe_writer = None
+        except Exception:
+            probe_sock.close()
+            raise
+
+        # Measure the actual WebSocket connection separately. This is the
+        # end-to-end connection latency used to calculate Delay Socket.
         session = ClientSession()
+        ws_started = time.perf_counter()
         ws_timeout = ClientWSTimeout(ws_close=3, ws_receive=3)
         upstream = await session.ws_connect(
             API_URL,
@@ -1548,9 +1598,15 @@ async def upstream_latency(request):
             autoping=True,
             timeout=ws_timeout,
         )
-        handshake_ms = round((time.perf_counter() - started) * 1000, 1)
+        connection_total_ms = round((time.perf_counter() - ws_started) * 1000, 1)
 
-        # Use the same application-level ping message already used by the client.
+        # Upgrade time is an estimate because the WebSocket connection is
+        # measured independently from the diagnostic DNS/TCP/TLS probe.
+        websocket_upgrade_ms = round(
+            max(0.0, connection_total_ms - dns_ms - tcp_ms - tls_ms), 1
+        )
+
+        # One application-level JSON PING/PONG RTT sample.
         ping_started = time.perf_counter()
         await upstream.send_json({"type": "ping"})
         pong_received = False
@@ -1564,7 +1620,7 @@ async def upstream_latency(request):
                 if isinstance(payload, dict) and str(payload.get("type", "")).lower() == "pong":
                     pong_received = True
                     break
-                if isinstance(payload.get("data"), dict) and str(payload["data"].get("type", "")).lower() == "pong":
+                if isinstance(payload, dict) and isinstance(payload.get("data"), dict) and str(payload["data"].get("type", "")).lower() == "pong":
                     pong_received = True
                     break
             elif message.type in (WSMsgType.CLOSED, WSMsgType.CLOSE, WSMsgType.ERROR):
@@ -1572,16 +1628,28 @@ async def upstream_latency(request):
         if not pong_received:
             raise asyncio.TimeoutError("Upstream tidak membalas PING dengan PONG")
         rtt_ms = round((time.perf_counter() - ping_started) * 1000, 1)
+
         return json_response({
             "ok": True,
-            "handshakeMs": handshake_ms,
-            "latencyMs": handshake_ms,
+            "handshakeMs": connection_total_ms,
+            "latencyMs": connection_total_ms,
+            "dnsMs": dns_ms,
+            "tcpMs": tcp_ms,
+            "tlsMs": tls_ms,
+            "websocketUpgradeMs": websocket_upgrade_ms,
+            "connectionTotalMs": connection_total_ms,
             "rttMs": rtt_ms,
             "upstream": API_URL,
         })
     except Exception as exc:
         return json_response({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}, status=502)
     finally:
+        if probe_writer is not None:
+            probe_writer.close()
+            try:
+                await probe_writer.wait_closed()
+            except Exception:
+                pass
         if upstream is not None and not upstream.closed:
             await upstream.close()
         if session is not None and not session.closed:
