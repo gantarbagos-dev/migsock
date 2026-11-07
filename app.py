@@ -50,7 +50,7 @@ from auth import (
 )
 
 ROOT = Path(__file__).resolve().parent / "public"
-API_URL = "wss://api.mig33.id/ws"
+API_URL = "wss://developer.mig33.id/developer/ws"
 SUBPROTOCOL = "mig33.developer.ws.v1"
 PORT = int(os.environ.get("PORT", "3000"))
 
