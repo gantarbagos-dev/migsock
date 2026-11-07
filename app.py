@@ -1533,7 +1533,7 @@ async def proxy(request):
     return browser
 
 async def upstream_latency(request):
-    """Measure the VPS-to-upstream WebSocket handshake latency."""
+    """Measure one VPS-to-upstream WebSocket handshake and one JSON PING/PONG RTT."""
     started = time.perf_counter()
     session = None
     upstream = None
@@ -1547,8 +1547,37 @@ async def upstream_latency(request):
             autoping=True,
             timeout=ws_timeout,
         )
-        latency_ms = round((time.perf_counter() - started) * 1000, 1)
-        return json_response({"ok": True, "latencyMs": latency_ms, "upstream": API_URL})
+        handshake_ms = round((time.perf_counter() - started) * 1000, 1)
+
+        # Use the same application-level ping message already used by the client.
+        ping_started = time.perf_counter()
+        await upstream.send_json({"type": "ping"})
+        pong_received = False
+        while True:
+            message = await upstream.receive(timeout=3)
+            if message.type == WSMsgType.TEXT:
+                try:
+                    payload = json.loads(message.data)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(payload, dict) and str(payload.get("type", "")).lower() == "pong":
+                    pong_received = True
+                    break
+                if isinstance(payload.get("data"), dict) and str(payload["data"].get("type", "")).lower() == "pong":
+                    pong_received = True
+                    break
+            elif message.type in (WSMsgType.CLOSED, WSMsgType.CLOSE, WSMsgType.ERROR):
+                break
+        if not pong_received:
+            raise asyncio.TimeoutError("Upstream tidak membalas PING dengan PONG")
+        rtt_ms = round((time.perf_counter() - ping_started) * 1000, 1)
+        return json_response({
+            "ok": True,
+            "handshakeMs": handshake_ms,
+            "latencyMs": handshake_ms,
+            "rttMs": rtt_ms,
+            "upstream": API_URL,
+        })
     except Exception as exc:
         return json_response({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}, status=502)
     finally:
