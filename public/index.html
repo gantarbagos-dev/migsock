@@ -371,10 +371,9 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 .autoset-option{display:flex;align-items:center;gap:9px;width:100%;min-height:42px;box-sizing:border-box;padding:8px 11px;border:1px solid rgba(84,223,255,.24);border-radius:11px;background:linear-gradient(110deg,rgba(22,185,232,.09),rgba(54,125,255,.07));color:#e5efff;font-size:12px;font-weight:800;cursor:pointer}
 .autoset-option input{flex:0 0 auto;width:17px;height:17px;min-height:17px;margin:0;padding:0;accent-color:#39cfff}
 .autoset-option-title{letter-spacing:.25px}
-.autoset-option-hint{margin-left:auto;color:var(--muted,#9ba9c8);font-size:10px;font-weight:500;text-align:right}
 .autoset-inline-status{display:block;margin:0 2px;font-size:9px;line-height:1.3;color:var(--muted,#9ba9c8);overflow-wrap:anywhere}
-@media(max-width:520px){.autoset-row{margin-top:7px;gap:3px}.autoset-option{min-height:40px;padding:7px 9px;gap:8px;font-size:11px}.autoset-option input{width:16px;height:16px;min-height:16px}.autoset-option-hint{font-size:9px}}
-@media(max-width:360px){.autoset-option{gap:6px;padding-left:7px;padding-right:7px}.autoset-option-hint{font-size:8px}}
+@media(max-width:520px){.autoset-row{margin-top:7px;gap:3px}.autoset-option{min-height:40px;padding:7px 9px;gap:8px;font-size:11px}.autoset-option input{width:16px;height:16px;min-height:16px}}
+@media(max-width:360px){.autoset-option{gap:6px;padding-left:7px;padding-right:7px}}
 </style>
 </head>
 <body>
@@ -2033,20 +2032,25 @@ async function refreshAutoSetDelay(){
     const response=await fetch("/api/latency",{method:"GET",cache:"no-store",credentials:"same-origin"});
     const result=await response.json();
     if(!response.ok || !result.ok)throw new Error(result.error||`HTTP ${response.status}`);
-    const handshakeMs=Number(result.handshakeMs ?? result.latencyMs);
+    const totalLatencyMs=Number(result.connectionTotalMs ?? result.handshakeMs ?? result.latencyMs);
     const rttMs=Number(result.rttMs);
-    if(!Number.isFinite(handshakeMs)||handshakeMs<=0)throw new Error("Sampel handshake tidak valid");
+    const dnsMs=Number(result.dnsMs);
+    const tcpMs=Number(result.tcpMs);
+    const tlsMs=Number(result.tlsMs);
+    const upgradeMs=Number(result.websocketUpgradeMs);
+    if(!Number.isFinite(totalLatencyMs)||totalLatencyMs<=0)throw new Error("Total latensi koneksi tidak valid");
     if(!Number.isFinite(rttMs)||rttMs<=0)throw new Error("Sampel RTT PING/PONG tidak valid");
+    if(![dnsMs,tcpMs,tlsMs,upgradeMs].every(Number.isFinite))throw new Error("Komponen latensi tidak lengkap");
 
-    // Preserve the existing ms-to-operating-delay scaling; with one sample,
-    // jitter is 0 and each delay is calculated independently.
-    const toAutoDelay=value=>Math.min(30,Math.max(1,Math.ceil(value/10)));
-    const socketDelay=toAutoDelay(handshakeMs);
+    // One sample per measurement. Convert every 100 ms to 1 ms of delay,
+    // clamped to the supported 1–30 ms range.
+    const toAutoDelay=value=>Math.min(30,Math.max(1,Math.ceil(value/100)));
+    const socketDelay=toAutoDelay(totalLatencyMs);
     const targetDelay=toAutoDelay(rttMs);
     document.getElementById("delaySocket").value=String(socketDelay);
     document.getElementById("delayTarget").value=String(targetDelay);
     if(statusEl)statusEl.textContent=
-      `ON · Selesai (1 sampel masing-masing) · Delay Socket ${socketDelay} ms · Delay Target ${targetDelay} ms · handshake ${handshakeMs.toFixed(1)} ms · RTT ${rttMs.toFixed(1)} ms · jitter tidak dihitung (1 sampel)`;
+      `ON · 1 sampel · Delay Socket ${socketDelay} ms · Delay Target ${targetDelay} ms · DNS ${dnsMs.toFixed(1)} ms · TCP ${tcpMs.toFixed(1)} ms · TLS ${tlsMs.toFixed(1)} ms · WebSocket upgrade* ${upgradeMs.toFixed(1)} ms · total koneksi ${totalLatencyMs.toFixed(1)} ms · PING/PONG RTT ${rttMs.toFixed(1)} ms · *estimasi`;
   }catch(error){
     if(statusEl)statusEl.textContent=`Gagal ukur: ${error?.message||String(error)} · nilai sebelumnya dipertahankan`;
   }finally{autoSetDelayBusy=false;}
