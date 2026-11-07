@@ -511,11 +511,11 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="150"></div>
     </div>
     <div class="duel-settings-row">
-      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="25"></div>
+      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" max="30" value="25"></div>
       <div class="field"><label for="delaySocketApplyEvery">Delay Socket Apply</label><select id="delaySocketApplyEvery">
         <option value="1" selected>Every 1 Sock</option><option value="2">Every 2 Sock</option><option value="3">Every 3 Sock</option><option value="4">Every 4 Sock</option><option value="5">Every 5 Sock</option>
       </select></div>
-      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="20"></div>
+      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" max="30" value="20"></div>
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
         <option value="1" selected>Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5">Every 5 Target</option>
       </select></div>
@@ -2017,13 +2017,11 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
     e.target.value="";
   }
 });
-// AutoSet: robust VPS -> Migreborn WebSocket latency sampling.
+// AutoSet: one-time VPS -> Migreborn latency measurement on each OFF -> ON action.
 // Five sequential samples reduce noise without creating a burst of connections.
-let autoSetDelayTimer=null;
 let autoSetDelayBusy=false;
 const AUTOSET_SAMPLE_COUNT=5;
 const AUTOSET_SAMPLE_GAP_MS=250;
-const AUTOSET_REFRESH_MS=10000;
 
 function medianOf(values){
   const sorted=[...values].sort((a,b)=>a-b);
@@ -2062,25 +2060,27 @@ async function refreshAutoSetDelay(){
     const deviations=samples.slice(1).map((value,i)=>Math.abs(value-samples[i]));
     const jitter=deviations.length?medianOf(deviations):0;
 
-    // Stable estimates from the measured distribution, not a fixed RTT fraction.
-    // Socket baseline follows typical latency plus measured variation;
-    // target baseline follows the upper-tail latency (P90).
-    const socketDelay=Math.min(2000,Math.max(10,Math.ceil(median+jitter)));
-    const targetDelay=Math.min(3000,Math.max(20,Math.ceil(p90)));
-    document.getElementById("delaySocket").value=String(socketDelay);
-    document.getElementById("delayTarget").value=String(targetDelay);
+    // Convert measured VPS -> Reborn handshake latency into the requested
+    // 1-30 ms operating range. P90 is used for target delay; median+jitter
+    // is used for socket delay so unstable links receive a slightly safer value.
+    const toAutoDelay=value=>Math.min(30,Math.max(1,Math.ceil(value/10)));
+    const socketDelay=toAutoDelay(median+jitter);
+    const targetDelay=toAutoDelay(p90);
+    const socketInput=document.getElementById("delaySocket");
+    const targetInput=document.getElementById("delayTarget");
+    socketInput.value=String(socketDelay);
+    targetInput.value=String(targetDelay);
     if(statusEl)statusEl.textContent=
-      `ON · median ${median.toFixed(1)} ms · P90 ${p90.toFixed(1)} ms · jitter ${jitter.toFixed(1)} ms · ${AUTOSET_SAMPLE_COUNT} sampel · ulang 10 dtk`;
+      `ON · Selesai (sekali) · Delay Socket ${socketDelay} ms · Delay Target ${targetDelay} ms · median ${median.toFixed(1)} ms · P90 ${p90.toFixed(1)} ms · jitter ${jitter.toFixed(1)} ms · ${AUTOSET_SAMPLE_COUNT} sampel`;
   }catch(error){
     if(statusEl)statusEl.textContent=`Gagal ukur: ${error?.message||String(error)} · nilai sebelumnya dipertahankan`;
   }finally{autoSetDelayBusy=false;}
 }
 function setAutoSetDelay(enabled){
-  if(autoSetDelayTimer){clearInterval(autoSetDelayTimer);autoSetDelayTimer=null;}
   const statusEl=document.getElementById("autoSetDelayStatus");
   if(!enabled){if(statusEl)statusEl.textContent="OFF · isi delay secara manual";return;}
+  // Measure and apply only once when the user switches AutoSet ON.
   void refreshAutoSetDelay();
-  autoSetDelayTimer=setInterval(refreshAutoSetDelay,AUTOSET_REFRESH_MS);
 }
 document.getElementById("autoSetDelay").addEventListener("change",event=>setAutoSetDelay(event.target.checked));
 
