@@ -511,11 +511,11 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="150"></div>
     </div>
     <div class="duel-settings-row">
-      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" max="30" value="25"></div>
+      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="1" max="30" value="25"></div>
       <div class="field"><label for="delaySocketApplyEvery">Delay Socket Apply</label><select id="delaySocketApplyEvery">
         <option value="1" selected>Every 1 Sock</option><option value="2">Every 2 Sock</option><option value="3">Every 3 Sock</option><option value="4">Every 4 Sock</option><option value="5">Every 5 Sock</option>
       </select></div>
-      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" max="30" value="20"></div>
+      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="1" max="30" value="20"></div>
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
         <option value="1" selected>Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5">Every 5 Target</option>
       </select></div>
@@ -2017,7 +2017,7 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
     e.target.value="";
   }
 });
-// AutoSet: one-time VPS -> Migreborn latency measurement on each OFF -> ON action.
+// AutoSet: one-time VPS -> developer WebSocket handshake measurement on each OFF -> ON action.
 // Five sequential samples reduce noise without creating a burst of connections.
 let autoSetDelayBusy=false;
 const AUTOSET_SAMPLE_COUNT=5;
@@ -2041,7 +2041,7 @@ async function refreshAutoSetDelay(){
   if(autoSetDelayBusy || !document.getElementById("autoSetDelay")?.checked)return;
   autoSetDelayBusy=true;
   const statusEl=document.getElementById("autoSetDelayStatus");
-  if(statusEl)statusEl.textContent=`Mengukur koneksi VPS → Migreborn (0/${AUTOSET_SAMPLE_COUNT})…`;
+  if(statusEl)statusEl.textContent=`Mengukur koneksi server → developer WebSocket (0/${AUTOSET_SAMPLE_COUNT})…`;
   try{
     const samples=[];
     for(let i=0;i<AUTOSET_SAMPLE_COUNT;i++){
@@ -2052,7 +2052,7 @@ async function refreshAutoSetDelay(){
       const latency=Number(result.latencyMs);
       if(!Number.isFinite(latency)||latency<=0)throw new Error("Sampel latensi tidak valid");
       samples.push(latency);
-      if(statusEl)statusEl.textContent=`Mengukur koneksi VPS → Migreborn (${samples.length}/${AUTOSET_SAMPLE_COUNT})…`;
+      if(statusEl)statusEl.textContent=`Mengukur koneksi server → developer WebSocket (${samples.length}/${AUTOSET_SAMPLE_COUNT})…`;
       if(i<AUTOSET_SAMPLE_COUNT-1)await sleepAutoSet(AUTOSET_SAMPLE_GAP_MS);
     }
     const median=medianOf(samples);
@@ -2060,8 +2060,8 @@ async function refreshAutoSetDelay(){
     const deviations=samples.slice(1).map((value,i)=>Math.abs(value-samples[i]));
     const jitter=deviations.length?medianOf(deviations):0;
 
-    // Convert measured VPS -> Reborn handshake latency into the requested
-    // 1-30 ms operating range. P90 is used for target delay; median+jitter
+    // Convert measured server -> developer WebSocket handshake latency into
+    // the 1-30 ms operating range. P90 is used for target delay; median+jitter
     // is used for socket delay so unstable links receive a slightly safer value.
     const toAutoDelay=value=>Math.min(30,Math.max(1,Math.ceil(value/10)));
     const socketDelay=toAutoDelay(median+jitter);
