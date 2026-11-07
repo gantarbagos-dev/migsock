@@ -363,6 +363,19 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   }
 }
 </style>
+<style id="autoset-below-delay-target">
+/* Loop uses the same full-width field sizing as the delay inputs above. */
+#loopKickField{min-width:0}
+#loopKickField #loopKick{display:block;width:100%;min-width:0;box-sizing:border-box}
+.autoset-row{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-top:8px;min-width:0}
+.autoset-option{display:flex;align-items:center;gap:9px;width:100%;min-height:42px;box-sizing:border-box;padding:8px 11px;border:1px solid rgba(84,223,255,.24);border-radius:11px;background:linear-gradient(110deg,rgba(22,185,232,.09),rgba(54,125,255,.07));color:#e5efff;font-size:12px;font-weight:800;cursor:pointer}
+.autoset-option input{flex:0 0 auto;width:17px;height:17px;min-height:17px;margin:0;padding:0;accent-color:#39cfff}
+.autoset-option-title{letter-spacing:.25px}
+.autoset-option-hint{margin-left:auto;color:var(--muted,#9ba9c8);font-size:10px;font-weight:500;text-align:right}
+.autoset-inline-status{display:block;margin:0 2px;font-size:9px;line-height:1.3;color:var(--muted,#9ba9c8);overflow-wrap:anywhere}
+@media(max-width:520px){.autoset-row{margin-top:7px;gap:3px}.autoset-option{min-height:40px;padding:7px 9px;gap:8px;font-size:11px}.autoset-option input{width:16px;height:16px;min-height:16px}.autoset-option-hint{font-size:9px}}
+@media(max-width:360px){.autoset-option{gap:6px;padding-left:7px;padding-right:7px}.autoset-option-hint{font-size:8px}}
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -506,7 +519,18 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
         <option value="1" selected>Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5">Every 5 Target</option>
       </select></div>
-      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" value="65"></div>
+      <div class="field" id="loopKickField">
+        <label for="loopKick">Loop</label>
+        <input id="loopKick" type="number" min="1" value="65">
+      </div>
+    </div>
+    <div class="autoset-row">
+      <label class="autoset-option" for="autoSetDelay">
+        <input id="autoSetDelay" type="checkbox">
+        <span class="autoset-option-title">AutoSet</span>
+        <span class="autoset-option-hint">Otomatis mengatur delay</span>
+      </label>
+      <span id="autoSetDelayStatus" class="autoset-inline-status" role="status" aria-live="polite">OFF · manual</span>
     </div>
     <div class="kick-mode-layout kick-layout-option-b">
       <div class="kick-mode-stack kick-settings-stack">
@@ -1993,6 +2017,73 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
     e.target.value="";
   }
 });
+// AutoSet: robust VPS -> Migreborn WebSocket latency sampling.
+// Five sequential samples reduce noise without creating a burst of connections.
+let autoSetDelayTimer=null;
+let autoSetDelayBusy=false;
+const AUTOSET_SAMPLE_COUNT=5;
+const AUTOSET_SAMPLE_GAP_MS=250;
+const AUTOSET_REFRESH_MS=10000;
+
+function medianOf(values){
+  const sorted=[...values].sort((a,b)=>a-b);
+  const mid=Math.floor(sorted.length/2);
+  return sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+}
+function percentileOf(values,p){
+  const sorted=[...values].sort((a,b)=>a-b);
+  if(!sorted.length)return 0;
+  const index=(sorted.length-1)*p;
+  const low=Math.floor(index),high=Math.ceil(index);
+  return sorted[low]+(sorted[high]-sorted[low])*(index-low);
+}
+function sleepAutoSet(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+
+async function refreshAutoSetDelay(){
+  if(autoSetDelayBusy || !document.getElementById("autoSetDelay")?.checked)return;
+  autoSetDelayBusy=true;
+  const statusEl=document.getElementById("autoSetDelayStatus");
+  if(statusEl)statusEl.textContent=`Mengukur koneksi VPS → Migreborn (0/${AUTOSET_SAMPLE_COUNT})…`;
+  try{
+    const samples=[];
+    for(let i=0;i<AUTOSET_SAMPLE_COUNT;i++){
+      if(!document.getElementById("autoSetDelay")?.checked)return;
+      const response=await fetch("/api/latency",{method:"GET",cache:"no-store",credentials:"same-origin"});
+      const result=await response.json();
+      if(!response.ok || !result.ok)throw new Error(result.error||`HTTP ${response.status}`);
+      const latency=Number(result.latencyMs);
+      if(!Number.isFinite(latency)||latency<=0)throw new Error("Sampel latensi tidak valid");
+      samples.push(latency);
+      if(statusEl)statusEl.textContent=`Mengukur koneksi VPS → Migreborn (${samples.length}/${AUTOSET_SAMPLE_COUNT})…`;
+      if(i<AUTOSET_SAMPLE_COUNT-1)await sleepAutoSet(AUTOSET_SAMPLE_GAP_MS);
+    }
+    const median=medianOf(samples);
+    const p90=percentileOf(samples,0.90);
+    const deviations=samples.slice(1).map((value,i)=>Math.abs(value-samples[i]));
+    const jitter=deviations.length?medianOf(deviations):0;
+
+    // Stable estimates from the measured distribution, not a fixed RTT fraction.
+    // Socket baseline follows typical latency plus measured variation;
+    // target baseline follows the upper-tail latency (P90).
+    const socketDelay=Math.min(2000,Math.max(10,Math.ceil(median+jitter)));
+    const targetDelay=Math.min(3000,Math.max(20,Math.ceil(p90)));
+    document.getElementById("delaySocket").value=String(socketDelay);
+    document.getElementById("delayTarget").value=String(targetDelay);
+    if(statusEl)statusEl.textContent=
+      `ON · median ${median.toFixed(1)} ms · P90 ${p90.toFixed(1)} ms · jitter ${jitter.toFixed(1)} ms · ${AUTOSET_SAMPLE_COUNT} sampel · ulang 10 dtk`;
+  }catch(error){
+    if(statusEl)statusEl.textContent=`Gagal ukur: ${error?.message||String(error)} · nilai sebelumnya dipertahankan`;
+  }finally{autoSetDelayBusy=false;}
+}
+function setAutoSetDelay(enabled){
+  if(autoSetDelayTimer){clearInterval(autoSetDelayTimer);autoSetDelayTimer=null;}
+  const statusEl=document.getElementById("autoSetDelayStatus");
+  if(!enabled){if(statusEl)statusEl.textContent="OFF · isi delay secara manual";return;}
+  void refreshAutoSetDelay();
+  autoSetDelayTimer=setInterval(refreshAutoSetDelay,AUTOSET_REFRESH_MS);
+}
+document.getElementById("autoSetDelay").addEventListener("change",event=>setAutoSetDelay(event.target.checked));
+
 document.getElementById("headerLogout").onclick=async function(){
   const button=this;
   button.disabled=true;
