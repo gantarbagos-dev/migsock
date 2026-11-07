@@ -1532,6 +1532,32 @@ async def proxy(request):
                 await session.close()
     return browser
 
+async def upstream_latency(request):
+    """Measure the VPS-to-upstream WebSocket handshake latency."""
+    started = time.perf_counter()
+    session = None
+    upstream = None
+    try:
+        session = ClientSession()
+        ws_timeout = ClientWSTimeout(ws_close=3, ws_receive=3)
+        upstream = await session.ws_connect(
+            API_URL,
+            protocols=(SUBPROTOCOL,),
+            heartbeat=20,
+            autoping=True,
+            timeout=ws_timeout,
+        )
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        return json_response({"ok": True, "latencyMs": latency_ms, "upstream": API_URL})
+    except Exception as exc:
+        return json_response({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}, status=502)
+    finally:
+        if upstream is not None and not upstream.closed:
+            await upstream.close()
+        if session is not None and not session.closed:
+            await session.close()
+
+
 async def health(request):
     return json_response({
         "ok": True,
@@ -1587,6 +1613,7 @@ app.router.add_get("/api/admin/devices", admin_devices)
 app.router.add_delete("/api/admin/devices/{device_id}", admin_delete_device)
 app.router.add_post("/api/admin/devices/{device_id}/{action}", admin_device_action)
 app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
+app.router.add_get("/api/latency", require_auth(upstream_latency))
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
