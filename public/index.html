@@ -2042,11 +2042,10 @@ async function refreshAutoSetDelay(){
     if(!Number.isFinite(rttMs)||rttMs<=0)throw new Error("Sampel RTT PING/PONG tidak valid");
     if(![dnsMs,tcpMs,tlsMs,upgradeMs].every(Number.isFinite))throw new Error("Komponen latensi tidak lengkap");
 
-    // One sample per measurement. Convert every 100 ms to 1 ms of delay,
-    // clamped to the supported 1–30 ms range.
-    const toAutoDelay=value=>Math.min(30,Math.max(1,Math.ceil(value/100)));
-    const socketDelay=toAutoDelay(totalLatencyMs);
-    const targetDelay=toAutoDelay(rttMs);
+    // Delay Socket: every 100 ms of total VPS-to-endpoint connection latency
+    // adds 1 ms, clamped to 1–30 ms. Delay Target keeps its previous RTT scale.
+    const socketDelay=Math.min(30,Math.max(1,Math.ceil(totalLatencyMs/100)));
+    const targetDelay=Math.min(30,Math.max(1,Math.ceil(rttMs/10)));
     document.getElementById("delaySocket").value=String(socketDelay);
     document.getElementById("delayTarget").value=String(targetDelay);
     if(statusEl)statusEl.textContent=
