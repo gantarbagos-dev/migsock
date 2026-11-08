@@ -363,18 +363,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   }
 }
 </style>
-<style id="autoset-below-delay-target">
-/* Loop uses the same full-width field sizing as the delay inputs above. */
-#loopKickField{min-width:0}
-#loopKickField #loopKick{display:block;width:100%;min-width:0;box-sizing:border-box}
-.autoset-row{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-top:8px;min-width:0}
-.autoset-option{display:flex;align-items:center;gap:9px;width:100%;min-height:42px;box-sizing:border-box;padding:8px 11px;border:1px solid rgba(84,223,255,.24);border-radius:11px;background:linear-gradient(110deg,rgba(22,185,232,.09),rgba(54,125,255,.07));color:#e5efff;font-size:12px;font-weight:800;cursor:pointer}
-.autoset-option input{flex:0 0 auto;width:17px;height:17px;min-height:17px;margin:0;padding:0;accent-color:#39cfff}
-.autoset-option-title{letter-spacing:.25px}
-.autoset-option-hint{margin-left:auto;color:var(--muted,#9ba9c8);font-size:10px;font-weight:500;text-align:right}
-@media(max-width:520px){.autoset-row{margin-top:7px;gap:3px}.autoset-option{min-height:40px;padding:7px 9px;gap:8px;font-size:11px}.autoset-option input{width:16px;height:16px;min-height:16px}.autoset-option-hint{font-size:9px}}
-@media(max-width:360px){.autoset-option{gap:6px;padding-left:7px;padding-right:7px}.autoset-option-hint{font-size:8px}}
-</style>
 </head>
 <body>
 <div class="wrap">
@@ -510,24 +498,15 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="150"></div>
     </div>
     <div class="duel-settings-row">
-      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="1" max="30" value="25"></div>
+      <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="25"></div>
       <div class="field"><label for="delaySocketApplyEvery">Delay Socket Apply</label><select id="delaySocketApplyEvery">
         <option value="1" selected>Every 1 Sock</option><option value="2">Every 2 Sock</option><option value="3">Every 3 Sock</option><option value="4">Every 4 Sock</option><option value="5">Every 5 Sock</option>
       </select></div>
-      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="1" max="30" value="20"></div>
+      <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="20"></div>
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
         <option value="1" selected>Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5">Every 5 Target</option>
       </select></div>
-      <div class="field" id="loopKickField">
-        <label for="loopKick">Loop</label>
-        <input id="loopKick" type="number" min="1" value="65">
-      </div>
-    </div>
-    <div class="autoset-row">
-      <label class="autoset-option" for="autoSetDelay">
-        <input id="autoSetDelay" type="checkbox">
-        <span class="autoset-option-title">AutoSet</span>
-      </label>
+      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" max="200" value="65"></div>
     </div>
     <div class="kick-mode-layout kick-layout-option-b">
       <div class="kick-mode-stack kick-settings-stack">
@@ -876,7 +855,7 @@ async function syncBackendAutoConfig(){
   autoConfigSyncBusy=true;
   try{
     const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
-    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.max(1,Number(document.getElementById('loopKick')?.value)||1),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||2)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||5)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
+    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
     await fetch('/api/kick-auto-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg),cache:'no-store'});
   }catch(_){/* config sync is retried on the next cycle */}
   finally{autoConfigSyncBusy=false;}
@@ -1561,10 +1540,10 @@ async function kickAll(){
   if(!room){log(0,'KICKALL ERROR: Room wajib diisi');return;}
   const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
   if(!targets.length){log(0,'KICKALL ERROR: TARGET wajib diisi');return;}
-  const loop=Math.max(1,Number(document.getElementById('loopKick').value)||1);
-  const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||2));
-  const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||5));
-  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||100)),};
+  const loop=Math.min(200,Math.max(1,Number(document.getElementById('loopKick').value)||1));
+  const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||1));
+  const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||1));
+  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/s/WS`);
   await syncBackendAutoConfig();
   const resetGeneration=troopResetGeneration;
@@ -1878,8 +1857,8 @@ function collectKickSet(){
   return {
     version:1,
     delaySocket:Number(document.getElementById("delaySocket").value)||0,
-    socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delaySocketApplyEvery").value)||2)),
-    targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delayTargetApplyEvery").value)||5)),
+    socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delaySocketApplyEvery").value)||1)),
+    targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delayTargetApplyEvery").value)||1)),
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||150,
     loopKick:Number(document.getElementById("loopKick").value)||1,
@@ -2014,42 +1993,6 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
     e.target.value="";
   }
 });
-// AutoSet: one independent WebSocket handshake sample and one independent
-// JSON PING/PONG RTT sample. A single sample cannot estimate jitter, so jitter
-// is treated as 0 rather than inferred.
-let autoSetDelayBusy=false;
-const AUTOSET_SAMPLE_COUNT=1;
-
-function sleepAutoSet(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
-
-async function refreshAutoSetDelay(){
-  if(autoSetDelayBusy || !document.getElementById("autoSetDelay")?.checked)return;
-  autoSetDelayBusy=true;
-  try{
-    const response=await fetch("/api/latency",{method:"GET",cache:"no-store",credentials:"same-origin"});
-    const result=await response.json();
-    if(!response.ok || !result.ok)throw new Error(result.error||`HTTP ${response.status}`);
-    const handshakeMs=Number(result.handshakeMs ?? result.latencyMs);
-    const rttMs=Number(result.rttMs);
-    if(!Number.isFinite(handshakeMs)||handshakeMs<=0)throw new Error("Sampel handshake tidak valid");
-    if(!Number.isFinite(rttMs)||rttMs<=0)throw new Error("Sampel RTT PING/PONG tidak valid");
-
-    // Preserve the existing ms-to-operating-delay scaling; with one sample,
-    // jitter is 0 and each delay is calculated independently.
-    const toAutoDelay=value=>Math.min(30,Math.max(1,Math.ceil(value/10)));
-    const socketDelay=toAutoDelay(handshakeMs);
-    const targetDelay=toAutoDelay(rttMs);
-    document.getElementById("delaySocket").value=String(socketDelay);
-    document.getElementById("delayTarget").value=String(targetDelay);
-  }catch(error){
-  }finally{autoSetDelayBusy=false;}
-}
-function setAutoSetDelay(enabled){
-  if(!enabled)return;
-  void refreshAutoSetDelay();
-}
-document.getElementById("autoSetDelay").addEventListener("change",event=>setAutoSetDelay(event.target.checked));
-
 document.getElementById("headerLogout").onclick=async function(){
   const button=this;
   button.disabled=true;
