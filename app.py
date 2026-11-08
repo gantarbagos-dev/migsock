@@ -1,4 +1,3 @@
-import json
 import asyncio
 import hashlib
 import os
@@ -608,11 +607,11 @@ async def configure_auto_kick(request):
         targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
         countdown_ms = max(0, min(60000, int(data.get("countdownMs", 60000))))
         trigger_ms = max(0, min(countdown_ms, int(data.get("timerKickall", 1500))))
-        loops = max(1, min(100, int(data.get("loop", 1))))
-        limit = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 150))))
+        loops = max(1, min(200, int(data.get("loop", 1))))
+        limit = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs") or 150)))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
-        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", 2) or 2)))
-        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", 5) or 5)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery") or 1)))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery") or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
@@ -724,11 +723,11 @@ def _launch_kick_job(session_id, data):
     room = str(data.get("room", "")).strip()
     targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
     try:
-        loops = max(1, min(100, int(data.get("loop", 1))))
-        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs", 150))))
+        loops = max(1, min(200, int(data.get("loop", 1))))
+        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs") or 150)))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
-        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery", 2)) or 2)))
-        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery", 5)) or 5)))
+        socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery")) or 1)))
+        target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery")) or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
         kick_method = str(data.get("kickMethod", "5-2"))
         if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
@@ -1533,61 +1532,6 @@ async def proxy(request):
                 await session.close()
     return browser
 
-async def upstream_latency(request):
-    """Measure one VPS-to-upstream WebSocket handshake and one JSON PING/PONG RTT."""
-    started = time.perf_counter()
-    session = None
-    upstream = None
-    try:
-        session = ClientSession()
-        ws_timeout = ClientWSTimeout(ws_close=3, ws_receive=3)
-        upstream = await session.ws_connect(
-            API_URL,
-            protocols=(SUBPROTOCOL,),
-            heartbeat=20,
-            autoping=True,
-            timeout=ws_timeout,
-        )
-        handshake_ms = round((time.perf_counter() - started) * 1000, 1)
-
-        # Use the same application-level ping message already used by the client.
-        ping_started = time.perf_counter()
-        await upstream.send_json({"type": "ping"})
-        pong_received = False
-        while True:
-            message = await upstream.receive(timeout=3)
-            if message.type == WSMsgType.TEXT:
-                try:
-                    payload = json.loads(message.data)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(payload, dict) and str(payload.get("type", "")).lower() == "pong":
-                    pong_received = True
-                    break
-                if isinstance(payload.get("data"), dict) and str(payload["data"].get("type", "")).lower() == "pong":
-                    pong_received = True
-                    break
-            elif message.type in (WSMsgType.CLOSED, WSMsgType.CLOSE, WSMsgType.ERROR):
-                break
-        if not pong_received:
-            raise asyncio.TimeoutError("Upstream tidak membalas PING dengan PONG")
-        rtt_ms = round((time.perf_counter() - ping_started) * 1000, 1)
-        return json_response({
-            "ok": True,
-            "handshakeMs": handshake_ms,
-            "latencyMs": handshake_ms,
-            "rttMs": rtt_ms,
-            "upstream": API_URL,
-        })
-    except Exception as exc:
-        return json_response({"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}, status=502)
-    finally:
-        if upstream is not None and not upstream.closed:
-            await upstream.close()
-        if session is not None and not session.closed:
-            await session.close()
-
-
 async def health(request):
     return json_response({
         "ok": True,
@@ -1643,7 +1587,6 @@ app.router.add_get("/api/admin/devices", admin_devices)
 app.router.add_delete("/api/admin/devices/{device_id}", admin_delete_device)
 app.router.add_post("/api/admin/devices/{device_id}/{action}", admin_device_action)
 app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
-app.router.add_get("/api/latency", require_auth(upstream_latency))
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
