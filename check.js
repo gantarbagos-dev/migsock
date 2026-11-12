@@ -676,7 +676,7 @@ async function logoutAll(){
   log(0,"LOGOUT ALL: seluruh WS/session troop lama dibersihkan; aplikasi tetap terbuka");
 }
 let roomBatchAction=null;
-const ROOM_SOCKET_DELAY_MS=80;
+const ROOM_SOCKET_DELAY_MS=150;
 const roomBatchSleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function runRoomBatchAction(action,room){
   if(roomBatchAction){log(0,`ROOM ${roomBatchAction.toUpperCase()} masih berjalan; abaikan ${action.toUpperCase()}`);return}
