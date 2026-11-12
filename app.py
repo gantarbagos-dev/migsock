@@ -167,10 +167,10 @@ async def mark_confirmed_kick(payload, session_id):
     return {"room": room, "target": target, "type": typ}
 
 
-# Maximum configurable kick rate per upstream WebSocket.
-# The UI exposes 1..200 kicks/second/WS; 100 preserves the previous default.
-KICK_MAX_PER_SECOND = 200
-KICK_LIMIT_LABEL = f"{KICK_MAX_PER_SECOND}/socket/second"
+# Maximum configurable kick count per upstream WebSocket in each rolling 500ms window.
+KICK_MAX_PER_WINDOW = 200
+KICK_WINDOW_SECONDS = 0.5
+KICK_LIMIT_LABEL = f"{KICK_MAX_PER_WINDOW}/socket/500ms"
 # Prevent a stalled upstream WebSocket send from blocking KICKALL indefinitely.
 KICK_SEND_TIMEOUT = float(os.environ.get("KICK_SEND_TIMEOUT", "0.05"))
 BROWSER_EVENT_TIMEOUT = float(os.environ.get("BROWSER_EVENT_TIMEOUT", "0.05"))
@@ -343,15 +343,15 @@ def all_active_ws_usernames(exclude_session=None):
     return names
 
 
-async def send_kick(ws, room, target, max_per_second=None, serialized_payload=None):
+async def send_kick(ws, room, target, max_per_window=None, serialized_payload=None):
     """Send one room.kick under a strict per-upstream-WebSocket sliding window.
 
     The limiter reserves a send attempt timestamp before writing to the socket.
     This is deliberately conservative: a failed/ambiguous send still consumes
     a slot, preventing concurrent tasks from exceeding the configured limit.
     """
-    limit = KICK_MAX_PER_SECOND if max_per_second is None else min(
-        KICK_MAX_PER_SECOND, max(1, int(max_per_second))
+    limit = KICK_MAX_PER_WINDOW if max_per_window is None else min(
+        KICK_MAX_PER_WINDOW, max(1, int(max_per_window))
     )
     wsid = id(ws)
     rate_lock = KICK_RATE_LOCKS.setdefault(wsid, asyncio.Lock())
@@ -369,8 +369,8 @@ async def send_kick(ws, room, target, max_per_second=None, serialized_payload=No
             if ws.closed:
                 return False
             now = loop.time()
-            cutoff = now - 1.0
-            # A timestamp exactly one second old is outside the rolling window.
+            cutoff = now - KICK_WINDOW_SECONDS
+            # A timestamp exactly 500ms old is outside the rolling window.
             while timestamps and timestamps[0] <= cutoff:
                 timestamps.popleft()
             if len(timestamps) < limit:
@@ -378,7 +378,7 @@ async def send_kick(ws, room, target, max_per_second=None, serialized_payload=No
                 # the limit together. Failed sends remain counted conservatively.
                 timestamps.append(now)
                 break
-            wait_for = max(0.001, timestamps[0] + 1.0 - now)
+            wait_for = max(0.001, timestamps[0] + KICK_WINDOW_SECONDS - now)
         await asyncio.sleep(wait_for)
 
     # The caller may provide a job-scoped serialized payload shared by all
@@ -608,7 +608,7 @@ async def configure_auto_kick(request):
         countdown_ms = max(0, min(60000, int(data.get("countdownMs", 60000))))
         trigger_ms = max(0, min(countdown_ms, int(data.get("timerKickall", 1500))))
         loops = max(1, min(200, int(data.get("loop", 1))))
-        limit = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs") or 150)))
+        limit = min(KICK_MAX_PER_WINDOW, max(1, int(data.get("kickLimitPerWs") or 150)))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery") or 1)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery") or 1)))
@@ -724,7 +724,7 @@ def _launch_kick_job(session_id, data):
     targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
     try:
         loops = max(1, min(200, int(data.get("loop", 1))))
-        kick_limit_per_ws = min(KICK_MAX_PER_SECOND, max(1, int(data.get("kickLimitPerWs") or 150)))
+        kick_limit_per_ws = min(KICK_MAX_PER_WINDOW, max(1, int(data.get("kickLimitPerWs") or 150)))
         delay_socket = max(0, min(60000, int(data.get("delaySocket", 10) or 0)))
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery")) or 1)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery")) or 1)))
