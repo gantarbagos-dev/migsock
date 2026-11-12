@@ -850,13 +850,24 @@ function startCountdownFromKick(m){
   log(0,'Event kick diterima; countdown frontend berjalan lokal');
 }
 let autoConfigSyncBusy=false;
-async function syncBackendAutoConfig(){
+let lastBackendAutoConfigPayload="";
+let lastBackendAutoConfigAt=0;
+async function syncBackendAutoConfig(force=false){
   if(autoConfigSyncBusy)return;
   autoConfigSyncBusy=true;
   try{
     const targets=[...targetList.querySelectorAll('.target-item')].map(e=>e.dataset.username).filter(Boolean);
     const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
-    await fetch('/api/kick-auto-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg),cache:'no-store'});
+    const payload=JSON.stringify(cfg);
+    const now=Date.now();
+    // Skip unchanged config posts during the 500ms watcher. A periodic refresh
+    // recovers server-side in-memory config after restarts or transient loss.
+    if(!force&&payload===lastBackendAutoConfigPayload&&now-lastBackendAutoConfigAt<5000)return;
+    const response=await fetch('/api/kick-auto-config',{method:'POST',headers:{'Content-Type':'application/json'},body:payload,cache:'no-store'});
+    if(response.ok){
+      lastBackendAutoConfigPayload=payload;
+      lastBackendAutoConfigAt=Date.now();
+    }
   }catch(_){/* config sync is retried on the next cycle */}
   finally{autoConfigSyncBusy=false;}
 }
@@ -1545,7 +1556,7 @@ async function kickAll(){
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||1));
   const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/500ms/WS`);
-  await syncBackendAutoConfig();
+  await syncBackendAutoConfig(true);
   const resetGeneration=troopResetGeneration;
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
