@@ -1391,7 +1391,7 @@ async function logoutAll(){
 }
 // ENTER ALL / LEAVE ALL mengirim ke setiap WS satu per satu dengan jeda 80 ms.
 let roomBatchAction=null;
-const ROOM_SOCKET_DELAY_MS=80;
+const ROOM_SOCKET_DELAY_MS=150;
 const roomBatchSleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function runRoomBatchAction(action,room){
   if(roomBatchAction){log(0,`ROOM ${roomBatchAction.toUpperCase()} masih berjalan; abaikan ${action.toUpperCase()}`);return}
