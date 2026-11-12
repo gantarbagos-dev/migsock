@@ -515,7 +515,11 @@ async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trig
             })
             if remaining_ms <= trigger_ms:
                 return
-            await asyncio.sleep(0.01)
+            # Browser countdown updates are display-only; the trigger path
+            # waits on the absolute monotonic deadline below. A 100ms publish
+            # cadence reduces event-loop and WebSocket overhead without moving
+            # or rounding the backend trigger deadline.
+            await asyncio.sleep(0.1)
 
     try:
         update_task = asyncio.create_task(publish_countdown_updates())
