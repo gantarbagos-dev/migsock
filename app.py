@@ -917,9 +917,20 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
     loop_no = 0
     processed_target_count = 0
     target_delay_interval = min(10, max(1, int(target_apply_every)))
-    # Launch each target's fan-out independently; do not wait for one target's
-    # socket sends to finish before scheduling the next target.
-    target_tasks = []
+    # Keep only in-flight fan-out tasks. Previously every completed task stayed
+    # in this list until the entire job ended (up to loops * targets entries).
+    # Discard completed handles immediately while preserving the same dispatch
+    # schedule and concurrency. Retrieve unexpected exceptions in the callback.
+    target_tasks = set()
+
+    def _release_target_task(task):
+        target_tasks.discard(task)
+        if not task.cancelled():
+            try:
+                task.exception()
+            except Exception:
+                pass
+
     try:
         while True:
             if loop_no >= loops:
@@ -949,7 +960,9 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
 
                     # Schedule this target immediately. Its WebSocket fan-out
                     # runs concurrently with other targets' fan-outs.
-                    target_tasks.append(asyncio.create_task(fanout_target(target)))
+                    target_task = asyncio.create_task(fanout_target(target))
+                    target_tasks.add(target_task)
+                    target_task.add_done_callback(_release_target_task)
                     processed_target_count += 1
 
                     has_more_targets = (
@@ -967,7 +980,7 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 break
 
         if target_tasks:
-            await asyncio.gather(*target_tasks, return_exceptions=True)
+            await asyncio.gather(*tuple(target_tasks), return_exceptions=True)
 
         while replacement_state.get("replacement_tasks"):
             pending = list(replacement_state["replacement_tasks"])
