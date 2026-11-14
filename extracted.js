@@ -704,30 +704,25 @@ function showUsers(users,auto=true){
     .filter(Boolean)
     .map(u=>[u.toLowerCase(),u])).values()];
   participantUsers=uniq;
-  userList.innerHTML="";
+  const fragment=document.createDocumentFragment();
 
-  // Auto Target is intentionally locked after the first successful selection
-  // for the current List User cycle. Later WS participant responses only
-  // refresh the User list and cannot replace the chosen pattern.
-  // Participant responses can arrive from WS1..WS10 at different times.
-  // Auto Target is scheduled by handleParticipants after the merged snapshot
-  // has had time to settle, so an early partial response cannot lock the
-  // wrong pattern.
-
+  // Keep the existing Auto Target cycle and filtering behavior unchanged.
   const visible=uniq.filter(u=>!targetHas(u)&&!confirmedKickedTargets.has(u.toLowerCase()));
   if(!visible.length){
     const e=document.createElement("div");e.className="empty";
     e.textContent=uniq.length?"Semua participant sudah dipindahkan ke TARGET":"Tidak ada participant";
-    userList.appendChild(e);
+    fragment.appendChild(e);
   }else{
-    visible.forEach(u=>{
+    for(const u of visible){
       const e=document.createElement("div");e.className="user-item";
+      e.dataset.username=u;
       const cb=document.createElement("input");cb.type="checkbox";cb.className="user-check";cb.title="Pindahkan ke TARGET";
       const label=document.createElement("span");label.textContent=u;
       cb.onchange=()=>{if(cb.checked)moveUserToTarget(u,e,cb)};
-      e.append(cb,label);userList.appendChild(e);
-    });
+      e.append(cb,label);fragment.appendChild(e);
+    }
   }
+  userList.replaceChildren(fragment);
   userCount.textContent=visible.length;
   updateTargetCount();
 }

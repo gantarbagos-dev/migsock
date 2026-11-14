@@ -283,7 +283,7 @@ function refreshUserList(){}
 function updateTargetCount(){targetCount.textContent=targetList.querySelectorAll(".target-item").length}
 function targetHas(username){
   const key=String(username||"").trim().toLowerCase();
-  return !!key && [...targetList.querySelectorAll(".target-item")].some(o=>String(o.dataset.username||"").trim().toLowerCase()===key);
+  return !!key && appState.targets.has(key);
 }
 function removeConfirmedKickedTarget(username){
   username=String(username||"").trim();
@@ -327,7 +327,7 @@ function addTarget(username){
   const key=value.toLowerCase();
   const ownWs=new Set();
   for(let i=0;i<N;i++){const u=cred(i).username;if(u)ownWs.add(u.trim().toLowerCase());}
-  if(ownWs.has(key)||confirmedKickedTargets.has(key)||targetHas(value)||targetList.querySelectorAll(".target-item").length>=10)return false;
+  if(ownWs.has(key)||confirmedKickedTargets.has(key)||targetHas(value)||appState.targets.size>=10)return false;
   const e=document.createElement("div");
   e.className="target-item";
   e.dataset.username=value;
@@ -709,30 +709,25 @@ function showUsers(users,auto=true){
     .filter(Boolean)
     .map(u=>[u.toLowerCase(),u])).values()];
   participantUsers=uniq;
-  userList.innerHTML="";
+  const fragment=document.createDocumentFragment();
 
-  // Auto Target is intentionally locked after the first successful selection
-  // for the current List User cycle. Later WS participant responses only
-  // refresh the User list and cannot replace the chosen pattern.
-  // Participant responses can arrive from WS1..WS10 at different times.
-  // Auto Target is scheduled by handleParticipants after the merged snapshot
-  // has had time to settle, so an early partial response cannot lock the
-  // wrong pattern.
-
+  // Keep the existing Auto Target cycle and filtering behavior unchanged.
   const visible=uniq.filter(u=>!targetHas(u)&&!confirmedKickedTargets.has(u.toLowerCase()));
   if(!visible.length){
     const e=document.createElement("div");e.className="empty";
     e.textContent=uniq.length?"Semua participant sudah dipindahkan ke TARGET":"Tidak ada participant";
-    userList.appendChild(e);
+    fragment.appendChild(e);
   }else{
-    visible.forEach(u=>{
+    for(const u of visible){
       const e=document.createElement("div");e.className="user-item";
+      e.dataset.username=u;
       const cb=document.createElement("input");cb.type="checkbox";cb.className="user-check";cb.title="Pindahkan ke TARGET";
       const label=document.createElement("span");label.textContent=u;
       cb.onchange=()=>{if(cb.checked)moveUserToTarget(u,e,cb)};
-      e.append(cb,label);userList.appendChild(e);
-    });
+      e.append(cb,label);fragment.appendChild(e);
+    }
   }
+  userList.replaceChildren(fragment);
   userCount.textContent=visible.length;
   updateTargetCount();
 }
@@ -765,6 +760,7 @@ function listUser(){
   const room=getRoom();if(!room)return;
   if(autoTargetTimer){clearTimeout(autoTargetTimer);autoTargetTimer=null}
   targetList.innerHTML="";
+  appState.targets.clear();
   userList.innerHTML="";
   userCount.textContent="0";
   autoTargetLocked=false;
