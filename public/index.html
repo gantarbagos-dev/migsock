@@ -725,9 +725,9 @@ function dispatchSocketEvent(m,i){
     return;
   }
   if(m.type==="kick.countdown.started" || m.type==="kick.countdown.update"){
-    // Display countdown is driven locally from the original kick event.
-    // Backend updates are intentionally ignored so connection jitter cannot
-    // pause, jump, or restart the frontend timer.
+    // Backend remaining time is authoritative; local monotonic time is used
+    // only to render smoothly between server synchronization messages.
+    syncCountdownFromBackend(m);
     return;
   }
   if(m.type==="kick.countdown.reset" || m.type==="kick.countdown.finished" || m.type==="kick.countdown.cancelled" || m.type==="kick.countdown.fired" || m.type==="kick.countdown.error"){
@@ -768,6 +768,8 @@ let frontendCountdownDeadline=0;
 let frontendCountdownInterval=null;
 let lastFrontendCountdownKey="";
 let lastFrontendCountdownStart=0;
+let backendCountdownActive=false;
+let backendClockOffsetMax=null;
 function countdownEl(){return document.getElementById("countdown")}
 function setCountdownValue(v){countdownEl().value=String(Math.max(0,Math.round(v)))}
 function renderFrontendCountdown(){
@@ -784,11 +786,39 @@ function startFrontendCountdown(durationMs,eventKey){
   if(eventKey && eventKey===lastFrontendCountdownKey && now-lastFrontendCountdownStart<5000)return;
   lastFrontendCountdownKey=eventKey||"";
   lastFrontendCountdownStart=now;
-  const duration=Math.max(0,Math.min(COUNTDOWN_DEFAULT,Number(durationMs)||COUNTDOWN_DEFAULT));
+  backendCountdownActive=false;
+  const parsed=Number(durationMs);
+  const duration=Math.max(0,Math.min(COUNTDOWN_DEFAULT,Number.isFinite(parsed)?parsed:COUNTDOWN_DEFAULT));
   frontendCountdownDeadline=now+duration;
   if(frontendCountdownInterval)clearInterval(frontendCountdownInterval);
   renderFrontendCountdown();
-  frontendCountdownInterval=setInterval(renderFrontendCountdown,100);
+  frontendCountdownInterval=setInterval(renderFrontendCountdown,50);
+}
+function syncCountdownFromBackend(message){
+  const remaining=Number(message?.remainingMs);
+  if(!Number.isFinite(remaining)||remaining<0)return;
+  let transitCorrection=0;
+  const serverNow=Number(message?.serverNowMs);
+  if(Number.isFinite(serverNow)&&serverNow>0){
+    const observedOffset=serverNow-Date.now();
+    if(backendClockOffsetMax===null||observedOffset>backendClockOffsetMax)backendClockOffsetMax=observedOffset;
+    // Correct excess delivery delay relative to the fastest update observed.
+    // The backend deadline remains authoritative for the actual scheduled action.
+    transitCorrection=Math.max(0,backendClockOffsetMax-observedOffset);
+  }
+  const correctedRemaining=Math.max(0,remaining-transitCorrection);
+  const candidateDeadline=performance.now()+correctedRemaining;
+  if(!backendCountdownActive){
+    backendCountdownActive=true;
+    frontendCountdownDeadline=candidateDeadline;
+    if(frontendCountdownInterval)clearInterval(frontendCountdownInterval);
+    frontendCountdownInterval=setInterval(renderFrontendCountdown,50);
+  }else{
+    // Re-align the display to the backend's absolute countdown without
+    // restarting the timer or accumulating interval/scheduler drift.
+    frontendCountdownDeadline=candidateDeadline;
+  }
+  renderFrontendCountdown();
 }
 function kickEventData(m){const d=m?.data&&typeof m.data==="object"?m.data:m||{};return {
   type:String(m?.type??d?.type??d?.event_type??"").toLowerCase(),
@@ -822,6 +852,8 @@ function isKickEvent(m){
 function kickEventKey(m){const d=kickEventData(m);return [d.type,d.action,d.room,d.target,d.time,d.status].join("|")}
 function stopCountdown(reset=true){
   frontendCountdownDeadline=0;
+  backendCountdownActive=false;
+  backendClockOffsetMax=null;
   if(frontendCountdownInterval){clearInterval(frontendCountdownInterval);frontendCountdownInterval=null}
   setCountdownValue(reset?COUNTDOWN_DEFAULT:0);
 }
