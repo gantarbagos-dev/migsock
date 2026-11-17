@@ -490,9 +490,40 @@ def _event_age_ms(event_time):
     except (TypeError, ValueError, OverflowError):
         return 0
 
+async def _wait_until_monotonic(deadline):
+    """Wait for an absolute event-loop deadline without accumulating tick drift.
+
+    call_at() schedules against the loop's monotonic clock. The callback checks
+    the clock again before releasing the waiter, so an early wake-up caused by
+    clock resolution is re-armed rather than firing the action prematurely.
+    """
+    loop = asyncio.get_running_loop()
+    waiter = loop.create_future()
+    handle = None
+
+    def wake_at_deadline():
+        nonlocal handle
+        remaining = deadline - loop.time()
+        if remaining > 0:
+            handle = loop.call_at(deadline, wake_at_deadline)
+            return
+        if not waiter.done():
+            waiter.set_result(None)
+
+    handle = loop.call_at(deadline, wake_at_deadline)
+    try:
+        await waiter
+    finally:
+        if handle is not None:
+            handle.cancel()
+
+
 async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline, event_age_ms=0):
     loop = asyncio.get_running_loop()
+    # The action deadline is absolute and monotonic. UI update cadence and
+    # browser/network latency must never be added to this value.
     trigger_deadline = deadline - (trigger_ms / 1000.0)
+    scheduled_at = trigger_deadline
     update_task = None
 
     async def publish_countdown_updates():
@@ -524,12 +555,12 @@ async def _run_auto_countdown(session_id, room_key, event_key, duration_ms, trig
     try:
         update_task = asyncio.create_task(publish_countdown_updates())
 
-        # Wait against the original absolute monotonic deadline, not by
-        # subtracting nominal tick intervals. Scheduler stalls, event-loop
-        # load, and awaited work therefore accumulate as real elapsed time.
-        await asyncio.sleep(max(0.0, trigger_deadline - loop.time()))
+        # Wait against the original absolute monotonic deadline. call_at()
+        # avoids relative-tick drift; any remaining lateness is event-loop/VPS
+        # scheduling delay and is measured at the actual dispatch point.
+        await _wait_until_monotonic(trigger_deadline)
         actual_fire_time = loop.time()
-        lateness_ms = max(0.0, (actual_fire_time - trigger_deadline) * 1000.0)
+        lateness_ms = max(0.0, (actual_fire_time - scheduled_at) * 1000.0)
 
         cfg = AUTO_KICK_CONFIGS.get(session_id)
         if not cfg or _norm_room_key(cfg.get("room")) != room_key:
@@ -600,7 +631,13 @@ async def handle_auto_kick_event(payload, session_id):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + duration_ms / 1000.0
     task = asyncio.create_task(_run_auto_countdown(session_id, room_key, event_key, duration_ms, trigger_ms, deadline, event_age_ms))
-    AUTO_KICK_TIMERS[(session_id, room_key)] = {"task":task, "event_key":event_key, "deadline":deadline}
+    AUTO_KICK_TIMERS[(session_id, room_key)] = {
+        "task":task,
+        "event_key":event_key,
+        "deadline":deadline,
+        "trigger_deadline":deadline - (trigger_ms / 1000.0),
+        "created_monotonic":loop.time(),
+    }
     print(f"[AUTO COUNTDOWN] started session={session_id[:8]} room={room!r} event_duration={event_duration_ms}ms event_age={event_age_ms}ms remaining={duration_ms}ms trigger={trigger_ms}ms", flush=True)
 
 @require_auth
