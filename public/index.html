@@ -2056,7 +2056,7 @@ document.getElementById("loadSetFile").addEventListener("change",async function(
     if(base)document.getElementById("saveLoadSet").value=base;
     document.getElementById("saveLoadSetFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
   }catch(_){
-    alert("File SET tidak valid atau rusak.");
+    console.error("LOAD SET gagal:",_);
   }finally{
     this.value="";
   }
@@ -2126,9 +2126,9 @@ function downloadConfigBlob(fileName,blob){
 }
 async function saveConfig(){
   const name=saveLoadEl.value.trim();
-  if(!name){alert("Isi nama SaveLoad terlebih dahulu.");return}
+  if(!name){console.warn("SaveLoad: nama belum diisi.");return}
   const range=getRange();
-  if(!range){alert("Rentang Awal dan Akhir tidak valid.");return}
+  if(!range){console.warn("SaveLoad: rentang Awal/Akhir tidak valid.");return}
   const cfg=collectConfig();
   const format=document.getElementById("saveLoadFormat").value==="txt"?"txt":"json";
   const serialized=JSON.stringify(cfg,null,2);
@@ -2143,14 +2143,8 @@ async function saveConfig(){
   const blob=new Blob([serialized],{type:format==="json"?"application/json":"text/plain;charset=utf-8"});
   try{
     downloadConfigBlob(safeDownloadName(name)+"."+format,blob);
-    alert(localSaved
-      ? "Save berhasil. Salinan juga disimpan di browser perangkat ini; tekan LOAD untuk memuatnya kembali."
-      : "File ekspor dibuat. Penyimpanan lokal browser tidak tersedia; simpan file hasil unduhan ini.");
   }catch(error){
     console.error("Ekspor SaveLoad gagal:",error);
-    alert(localSaved
-      ? "Data berhasil disimpan di browser perangkat ini, tetapi unduhan file gagal."
-      : "Save gagal. Browser tidak mengizinkan penyimpanan data.");
   }
 }
 function applyConfig(cfg){
@@ -2158,7 +2152,7 @@ function applyConfig(cfg){
     throw new Error("Struktur file tidak valid.");
   const start=String(cfg.start??"01"), end=String(cfg.end??"10");
   const startNum=Number(start), endNum=Number(end);
-  if(!/^\\d+$/.test(start)||!/^\\d+$/.test(end)||
+  if(!/^\d+$/.test(start)||!/^\d+$/.test(end)||
      !Number.isSafeInteger(startNum)||!Number.isSafeInteger(endNum)||
      startNum<0||endNum<startNum)
     throw new Error("Nilai rentang Awal/Akhir tidak valid.");
@@ -2190,12 +2184,10 @@ function loadConfig(){
       if(saved){
         applyConfig(JSON.parse(saved));
         document.getElementById("saveLoadFormat").value="json";
-        alert("LOAD berhasil dari penyimpanan browser perangkat ini.");
         return;
       }
     }catch(error){
       console.error("Load lokal gagal:",error);
-      alert("Data SaveLoad lokal rusak atau tidak cocok: "+(error?.message||String(error))+". Silakan pilih file cadangan.");
     }
   }
   document.getElementById("loadFile").click();
@@ -2209,9 +2201,8 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
     applyConfig(cfg);
     document.getElementById("saveLoad").value=file.name.replace(/\.(json|txt)$/i,"");
     document.getElementById("saveLoadFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
-    alert("LOAD berhasil dari file "+file.name+".");
   }catch(err){
-    alert("LOAD gagal: "+(err?.message||"File JSON tidak valid atau rusak."));
+    console.error("LOAD SaveLoad gagal:",err);
   }finally{
     e.target.value="";
   }
