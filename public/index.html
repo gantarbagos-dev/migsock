@@ -246,9 +246,9 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 .header-logout{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:42px;height:42px;min-height:42px;padding:9px;border:1px solid rgba(248,113,113,.35)!important;border-radius:13px;background:linear-gradient(145deg,rgba(190,24,93,.95),rgba(185,28,28,.95))!important;color:#fff!important;box-shadow:0 5px 16px rgba(185,28,28,.22)!important}
 .header-logout svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .header-logout:focus-visible{outline:2px solid #fca5a5;outline-offset:3px}
-\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n/* File inputs stay rendered (not display:none) so Android browsers/WebView can open the native picker reliably. */
-/* Hide native file-input controls completely; LOAD / LOAD SET are the only visible triggers. */
-input[type="file"],.native-file-picker{display:none!important;position:absolute!important;width:0!important;height:0!important;min-width:0!important;min-height:0!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;visibility:hidden!important;pointer-events:none!important}
+\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n/* Hide native file inputs visually without display:none/visibility:hidden.
+   Android Chrome/WebView may refuse to open a picker for a fully hidden input. */
+input[type="file"],.native-file-picker{display:block!important;position:fixed!important;left:0!important;top:0!important;width:1px!important;height:1px!important;min-width:1px!important;min-height:1px!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;clip-path:inset(50%)!important;overflow:hidden!important;pointer-events:none!important;z-index:-1!important}
 </style>
 
 <style id="suicide-toggle-style">
@@ -2048,14 +2048,15 @@ async function saveKickSet(){
 }
 function openNativeFilePicker(input){
   if(!input) return false;
-  // Keep this call synchronous with the user's button tap (required by mobile browsers/WebView).
+  // Reset before opening so choosing the same file again still fires "change".
+  try{ input.value=""; }catch(_error){}
+  // Must run synchronously in the button's trusted click event on Android.
   try{
     if(typeof input.showPicker === "function"){
       input.showPicker();
       return true;
     }
   }catch(error){
-    // Some WebViews expose showPicker but reject it; fall back to click().
     console.debug("showPicker tidak tersedia, memakai click():",error);
   }
   try{
@@ -2074,13 +2075,15 @@ document.getElementById("loadSetFile").addEventListener("change",async function(
   const file=this.files?.[0];
   if(!file)return;
   try{
-    const cfg=JSON.parse(await file.text());
+    const raw=typeof file.text==="function"?await file.text():await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result??""));reader.onerror=()=>reject(reader.error||new Error("File tidak dapat dibaca."));reader.readAsText(file);});
+    const cfg=JSON.parse(raw.replace(/^\uFEFF/,"").trim());
     applyKickSet(cfg);
     const base=file.name.replace(/\.(json|txt)$/i,"");
     if(base)document.getElementById("saveLoadSet").value=base;
     document.getElementById("saveLoadSetFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
-  }catch(_){
-    console.error("LOAD SET gagal:",_);
+  }catch(error){
+    console.error("LOAD SET gagal:",error);
+    alert("Gagal memuat file: "+(error?.message||"format tidak valid."));
   }finally{
     this.value="";
   }
@@ -2214,21 +2217,8 @@ function openSaveLoadFilePicker(){
   }
 }
 function loadConfig(){
-  const name=saveLoadEl.value.trim();
-  if(name){
-    try{
-      const saved=localStorage.getItem(configStorageKey(name));
-      if(saved){
-        applyConfig(JSON.parse(saved));
-        document.getElementById("saveLoadFormat").value="json";
-        setSaveLoadStatus("Berhasil memuat data lokal: "+name);
-        return;
-      }
-    }catch(error){
-      console.error("Load lokal gagal:",error);
-      setSaveLoadStatus("Data lokal gagal dibaca. Silakan pilih file JSON/TXT.",true);
-    }
-  }
+  // LOAD is an explicit file action: always open the device picker so files in
+  // the MIGSOCK folder can be selected even if a same-named local copy exists.
   setSaveLoadStatus("Pilih file JSON atau TXT untuk dimuat.");
   openSaveLoadFilePicker();
 }
@@ -2247,7 +2237,7 @@ document.getElementById("loadFile").addEventListener("change",async function(e){
           reader.onerror=()=>reject(reader.error||new Error("File tidak dapat dibaca."));
           reader.readAsText(file);
         });
-    const cfg=JSON.parse(raw.replace(/^\\uFEFF/,"").trim());
+    const cfg=JSON.parse(raw.replace(/^\uFEFF/,"").trim());
     applyConfig(cfg);
     document.getElementById("saveLoad").value=file.name.replace(/\.(json|txt)$/i,"");
     document.getElementById("saveLoadFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
