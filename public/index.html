@@ -49,8 +49,8 @@ html{background:#020617}body{font-family:Inter,ui-sans-serif,system-ui,-apple-sy
 @media(prefers-reduced-motion:reduce){.hero-dot{animation:none}}
 
 
-.setting-row{display:grid;gap:8px;align-items:end}.troop-row{grid-template-columns:minmax(0,2fr) minmax(72px,.8fr) minmax(72px,.8fr) minmax(118px,1.1fr)}.pass-row{grid-template-columns:minmax(0,3fr) minmax(118px,1fr);margin-top:9px}.save-row{grid-template-columns:minmax(0,3fr) minmax(90px,1fr) minmax(90px,1fr)}.setting-row .field{min-width:0}.setting-row input,.setting-row button{width:100%;min-width:0}.setting-row button{white-space:nowrap}
-@media(max-width:560px){.wrap{padding:8px}.troop-row{grid-template-columns:minmax(0,1.65fr) minmax(58px,.7fr) minmax(58px,.7fr) minmax(94px,1fr)}.save-row{grid-template-columns:minmax(0,2fr) minmax(70px,.75fr) minmax(70px,.75fr)}.pass-row{grid-template-columns:minmax(0,2fr) minmax(94px,1fr)}.setting-row{gap:6px}.setting-row input,.setting-row button{font-size:12px;padding-left:8px;padding-right:8px}}
+.setting-row{display:grid;gap:8px;align-items:end}.troop-row{grid-template-columns:minmax(130px,2fr) minmax(52px,.65fr) minmax(52px,.65fr) minmax(130px,2fr) minmax(100px,1.1fr)}.pass-row{grid-template-columns:minmax(0,3fr) minmax(118px,1fr);margin-top:9px}.save-row{grid-template-columns:minmax(0,3fr) minmax(90px,1fr) minmax(90px,1fr)}.setting-row .field{min-width:0}.setting-row input,.setting-row button{width:100%;min-width:0}.setting-row button{white-space:nowrap}
+@media(max-width:560px){.wrap{padding:8px}.troop-row{grid-template-columns:minmax(105px,1.7fr) minmax(42px,.65fr) minmax(42px,.65fr) minmax(105px,1.7fr) minmax(82px,1fr)}.save-row{grid-template-columns:minmax(0,2fr) minmax(70px,.75fr) minmax(70px,.75fr)}.pass-row{grid-template-columns:minmax(0,2fr) minmax(94px,1fr)}.setting-row{gap:6px}.setting-row input,.setting-row button{font-size:12px;padding-left:8px;padding-right:8px}}
 
 
 /* ===== MOBILE NEON UI V2 ===== */
@@ -406,9 +406,10 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 
   <div class="panel section-card login-troop-card">
     <div class="setting-row troop-row">
-      <div class="field"><label for="nametroop">NameTroop</label><input id="nametroop" placeholder="contoh: tai" autocomplete="off"></div>
+      <div class="field troop-name-field"><label for="nametroop">NameTroop Awal</label><input id="nametroop" placeholder="contoh: multy." autocomplete="off"></div>
       <div class="field"><label for="start">Awal</label><input id="start" type="text" inputmode="numeric" pattern="\d*" value="00" maxlength="3"></div>
       <div class="field"><label for="end">Akhir</label><input id="end" type="text" inputmode="numeric" pattern="\d*" value="99" maxlength="3"></div>
+      <div class="field troop-name-field"><label for="nametroopSuffix">NameTroop Akhir</label><input id="nametroopSuffix" placeholder="contoh: .multy" autocomplete="off"></div>
       <div class="field"><label>&nbsp;</label><button id="generateTroop" class="primary">GENERATE</button></div>
     </div>
     <div class="setting-row pass-row">
@@ -1336,6 +1337,7 @@ function clearTargets(){
 }
 function generateTroop(){
   const prefix=document.getElementById("nametroop").value.trim();
+  const ending=document.getElementById("nametroopSuffix").value.trim();
   if(!prefix){return}
   const range=getRange();
   if(!range)return;
@@ -1348,7 +1350,7 @@ function generateTroop(){
     range.values.forEach((n,slot)=>{
       const width=Math.max(range.startWidth,1);
       const suffix=String(n).padStart(width,"0");
-      const u=prefix+suffix;
+      const u=prefix+suffix+ending;
       document.getElementById(`user-${slot}`).value=u;
       log(slot,`Username ${u}`);
     });
@@ -2071,6 +2073,7 @@ function collectConfig(){
   return {
     version:2,
     nameTroop:document.getElementById("nametroop").value,
+    nameTroopSuffix:document.getElementById("nametroopSuffix").value,
     start:Number(document.getElementById("start").value),
     end:Number(document.getElementById("end").value),
     passwordAll:document.getElementById("passwordAll").value,
@@ -2107,46 +2110,108 @@ async function saveBlobToPhoneFolder(folderName,fileName,blob){
   return false;
 }
 
+function configStorageKey(name){
+  return SAVE_PREFIX + String(name||"").trim();
+}
+function downloadConfigBlob(fileName,blob){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=fileName;
+  a.style.display="none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
 async function saveConfig(){
   const name=saveLoadEl.value.trim();
-  if(!name){return}
+  if(!name){alert("Isi nama SaveLoad terlebih dahulu.");return}
   const range=getRange();
-  if(!range)return;
+  if(!range){alert("Rentang Awal dan Akhir tidak valid.");return}
   const cfg=collectConfig();
-  const format=document.getElementById("saveLoadFormat").value;
-  const blob=new Blob([JSON.stringify(cfg,null,2)],{type:format==="json"?"application/json":"text/plain"});
-  await saveBlobToPhoneFolder("migsock",safeDownloadName(name)+"."+format,blob);
+  const format=document.getElementById("saveLoadFormat").value==="txt"?"txt":"json";
+  const serialized=JSON.stringify(cfg,null,2);
+  const key=configStorageKey(name);
+  let localSaved=false;
+  try{
+    localStorage.setItem(key,serialized);
+    localSaved=true;
+  }catch(error){
+    console.error("SaveLoad lokal gagal:",error);
+  }
+  const blob=new Blob([serialized],{type:format==="json"?"application/json":"text/plain;charset=utf-8"});
+  try{
+    downloadConfigBlob(safeDownloadName(name)+"."+format,blob);
+    alert(localSaved
+      ? "Save berhasil. Salinan juga disimpan di browser perangkat ini; tekan LOAD untuk memuatnya kembali."
+      : "File ekspor dibuat. Penyimpanan lokal browser tidak tersedia; simpan file hasil unduhan ini.");
+  }catch(error){
+    console.error("Ekspor SaveLoad gagal:",error);
+    alert(localSaved
+      ? "Data berhasil disimpan di browser perangkat ini, tetapi unduhan file gagal."
+      : "Save gagal. Browser tidak mengizinkan penyimpanan data.");
+  }
 }
 function applyConfig(cfg){
-  const accounts=Array.isArray(cfg.accounts)?cfg.accounts:[];
+  if(!cfg || typeof cfg!=="object" || Array.isArray(cfg))
+    throw new Error("Struktur file tidak valid.");
   const start=String(cfg.start??"01"), end=String(cfg.end??"10");
-  const a=Number(start), b=Number(end);
-  if(!/^\d+$/.test(start)||!/^\d+$/.test(end)||!Number.isSafeInteger(a)||!Number.isSafeInteger(b)||b-a+1!==N)
-    throw new Error(`File harus berisi rentang tepat ${N} ID.`);
-  document.getElementById("nametroop").value=cfg.nameTroop||"";
+  const startNum=Number(start), endNum=Number(end);
+  if(!/^\\d+$/.test(start)||!/^\\d+$/.test(end)||
+     !Number.isSafeInteger(startNum)||!Number.isSafeInteger(endNum)||
+     startNum<0||endNum<startNum)
+    throw new Error("Nilai rentang Awal/Akhir tidak valid.");
+  if(cfg.accounts!==undefined && !Array.isArray(cfg.accounts))
+    throw new Error("Daftar akun pada file tidak valid.");
+  const accounts=Array.isArray(cfg.accounts)?cfg.accounts:[];
+  // Validate all account records before changing any visible field.
+  for(let i=0;i<Math.min(accounts.length,N);i++){
+    if(accounts[i]!==null && (typeof accounts[i]!=="object" || Array.isArray(accounts[i])))
+      throw new Error(`Data akun ke-${i+1} tidak valid.`);
+  }
+  document.getElementById("nametroop").value=String(cfg.nameTroop??"");
+  document.getElementById("nametroopSuffix").value=String(cfg.nameTroopSuffix??"");
   document.getElementById("start").value=start;
   document.getElementById("end").value=end;
-  document.getElementById("passwordAll").value=cfg.passwordAll||"";
+  document.getElementById("passwordAll").value=String(cfg.passwordAll??"");
   for(let i=0;i<N;i++){
-    const a=accounts[i]||{};
-    document.getElementById(`user-${i}`).value=String(a.username||"");
-    document.getElementById(`pass-${i}`).value=String(a.password||"");
+    const account=accounts[i]||{};
+    document.getElementById(`user-${i}`).value=String(account.username??"");
+    document.getElementById(`pass-${i}`).value=String(account.password??"");
   }
   refreshUserList();
 }
 function loadConfig(){
+  const name=saveLoadEl.value.trim();
+  if(name){
+    try{
+      const saved=localStorage.getItem(configStorageKey(name));
+      if(saved){
+        applyConfig(JSON.parse(saved));
+        document.getElementById("saveLoadFormat").value="json";
+        alert("LOAD berhasil dari penyimpanan browser perangkat ini.");
+        return;
+      }
+    }catch(error){
+      console.error("Load lokal gagal:",error);
+      alert("Data SaveLoad lokal rusak atau tidak cocok: "+(error?.message||String(error))+". Silakan pilih file cadangan.");
+    }
+  }
   document.getElementById("loadFile").click();
 }
 document.getElementById("loadFile").addEventListener("change",async function(e){
   const file=e.target.files?.[0];
   if(!file)return;
   try{
-    const cfg=JSON.parse(await file.text());
+    const text=await file.text();
+    const cfg=JSON.parse(text.replace(/^\\uFEFF/,"").trim());
     applyConfig(cfg);
     document.getElementById("saveLoad").value=file.name.replace(/\.(json|txt)$/i,"");
     document.getElementById("saveLoadFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
+    alert("LOAD berhasil dari file "+file.name+".");
   }catch(err){
-    log(0,"LOAD gagal: "+(err?.message||"File JSON tidak valid."));
+    alert("LOAD gagal: "+(err?.message||"File JSON tidak valid atau rusak."));
   }finally{
     e.target.value="";
   }
@@ -2254,6 +2319,28 @@ setInterval(syncBackendAutoConfig,500);
  .kick-layout-option-b .kick-save-input-row #saveLoadSet{max-width:105px!important}
  .kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:54px!important;min-width:54px!important;max-width:54px!important;font-size:10px!important;padding:2px 3px!important}
 }
+
+/* NameTroop fields: keep Awal and Akhir side-by-side on every screen */
+.troop-row > .field { min-width: 0; }
+.troop-row .troop-name-field input,
+.troop-row .field input { min-width: 0; }
+.troop-row .field label { white-space: nowrap; }
+@media (max-width: 560px) {
+  .troop-row {
+    grid-template-columns: minmax(0,1fr) minmax(0,1fr) 48px 48px !important;
+    column-gap: 6px !important;
+    row-gap: 7px !important;
+  }
+  .troop-row > .field:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .troop-row > .field:nth-child(4) { grid-column: 2; grid-row: 1; }
+  .troop-row > .field:nth-child(2) { grid-column: 3; grid-row: 1; }
+  .troop-row > .field:nth-child(3) { grid-column: 4; grid-row: 1; }
+  .troop-row > .field:nth-child(5) { grid-column: 1 / -1; grid-row: 2; }
+  .troop-row > .field:nth-child(5) button { width: 100%; }
+  .troop-row .field label { font-size: 9px !important; letter-spacing: .3px !important; }
+  .troop-row .field input { width: 100%; padding-left: 6px; padding-right: 6px; font-size: 11px !important; }
+}
+
 </style>
 </body>
 </html>
