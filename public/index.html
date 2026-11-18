@@ -405,7 +405,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   </section>
 
   <div class="panel section-card login-troop-card">
-    <div class="section-heading"><div class="section-icon">👥</div><div><strong>Login Troop</strong><small>Atur username dan password troop</small></div></div>
     <div class="setting-row troop-row">
       <div class="field"><label for="nametroop">NameTroop</label><input id="nametroop" placeholder="contoh: tai" autocomplete="off"></div>
       <div class="field"><label for="start">Awal</label><input id="start" type="text" inputmode="numeric" pattern="\d*" value="00" maxlength="3"></div>
@@ -419,7 +418,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   </div>
 
   <div class="panel section-card save-card">
-    <div class="section-heading"><div class="section-icon">☁️</div><div><strong>Save / Load</strong><small>Simpan atau muat konfigurasi troop</small></div></div>
     <div class="setting-row save-row">
       <div class="field"><label for="saveLoad">SaveLoad</label><input id="saveLoad" value="multi1" placeholder="Nama simpanan, contoh: multi1" autocomplete="off"><select id="saveLoadFormat" aria-label="Format file SaveLoad"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><input id="loadFile" type="file" accept=".json,.txt,application/json,text/plain" style="display:none"></div>
       <div class="field"><label>&nbsp;</label><button id="saveConfig" class="primary">SAVE</button></div>
@@ -428,7 +426,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   </div>
 
   <div class="panel section-card troop-table-card">
-    <div class="section-heading troop-heading"><div class="section-icon">👥</div><div><strong>Daftar Troop (10)</strong><small>Username &amp; password troop</small></div><span class="count-pill">10 / 10</span></div>
     <table>
       <thead><tr><th>Username</th><th>Password / Saldo</th><th>Status</th></tr></thead>
       <tbody id="rows"></tbody>
@@ -446,7 +443,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 
   <section id="panelFlat" class="tab-panel" role="tabpanel">
   <div class="panel section-card">
-    <div class="section-heading"><div class="section-icon">💰</div><div><strong>FLAT</strong><small>Samakan saldo WS1–WS10 dari akun bank</small></div></div>
     <div class="setting-row" style="grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">
       <div class="field"><label for="usernamebank">UsernameBank</label><input id="usernamebank" placeholder="Username bank" autocomplete="off"></div>
       <div class="field"><label for="passwordbank">PasswordBank</label><input id="passwordbank" type="password" placeholder="Password bank" autocomplete="new-password"></div>
@@ -461,6 +457,12 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     <div class="setting-row" style="grid-template-columns:1fr;gap:8px;margin-top:8px">
       <div class="field"><label>&nbsp;</label><button id="flatButton" class="primary" style="min-height:48px">FLAT</button></div>
     </div>
+    <div class="setting-row" style="grid-template-columns:minmax(0,1fr);gap:8px">
+      <div class="field"><label for="pinTroop">PIN Troop</label><input id="pinTroop" type="password" inputmode="numeric" placeholder="PIN transfer akun troop" autocomplete="off"></div>
+      <div class="field"><button id="evenOutTroopButton" class="green" style="min-height:48px">EVEN OUT BALANCE TROOP</button></div>
+    </div>
+    <div id="evenOutTroopStatus" class="status" style="margin-top:9px;color:#94a3b8"></div>
+
     <div id="flatStatus" class="status" style="margin-top:9px;color:#94a3b8">Bank belum login.</div>
     <div class="flat-progress"><div id="flatProgressFill" class="flat-progress-fill"></div></div>
     <div id="flatSummary" class="flat-summary"><span>Progress <b>0/10</b></span><span>Total kirim <b>0</b></span><span>Berhasil <b>0</b></span><span>Gagal <b>0</b></span></div>
@@ -475,7 +477,6 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 
   <section id="panelDuel" class="tab-panel" role="tabpanel">
   <div class="panel section-card room-users-card">
-    <div class="section-heading"><div class="section-icon">👥</div><div><strong>Room &amp; User List</strong><small>Masukkan room lalu ambil daftar user</small></div></div>
     <div class="lists-grid">
       <div>
         <div class="listtitle"><span>USER</span><span id="userCount">0</span></div>
@@ -714,6 +715,15 @@ function dispatchSocketEvent(m,i){
   appState.eventSeq++;
   appState.lastEventAt=performance.now();
   updateBalanceFromMessage(i,m);
+  if(String(m.type||'').toLowerCase()==='wallet.transfer.result' && troopEvenOutRun.pending?.i===i){
+    settleTroopTransfer(i,true,'Transfer diterima API');
+    return;
+  }
+  if(String(m.type||'').toLowerCase()==='error' && troopEvenOutRun.pending?.i===i){
+    const msg=String(m?.data?.message||m?.data?.error||m?.message||'transfer ditolak');
+    settleTroopTransfer(i,false,msg);
+    return;
+  }
   if(suicideEnabled&&isVoteStartedKickEvent(m))triggerSuicideFromVote(m);
   if(m.type==="kick.target.confirmed"){removeConfirmedKickedTarget(m.target_username);return}
   if(m.type==="kick.socket.started"){
@@ -1632,6 +1642,30 @@ const bankClient={ws:null,loggedIn:false,pingTimer:null,intentionalClose:false,g
 const bankBalanceEl=document.getElementById("bankBalance"),flatStatusEl=document.getElementById("flatStatus");
 const flatReportBody=document.getElementById('flatReportBody'),flatProgressFill=document.getElementById('flatProgressFill'),flatSummary=document.getElementById('flatSummary');
 const flatRun={active:false,pending:[],pendingByKey:new Map(),sent:0,done:0,failed:0,total:0,totalSent:0};
+const troopEvenOutRun={active:false,pending:null};
+function troopEvenOutStatus(message,ok=false){
+  const el=document.getElementById('evenOutTroopStatus');
+  if(el){el.textContent=message;el.style.color=ok?'#22c55e':'#94a3b8'}
+}
+function settleTroopTransfer(i,ok,message=''){
+  const pending=troopEvenOutRun.pending;
+  if(!pending||pending.i!==i)return false;
+  troopEvenOutRun.pending=null;
+  clearTimeout(pending.timer);
+  pending.resolve({ok,message});
+  return true;
+}
+function waitForTroopTransfer(i,timeoutMs=12000){
+  return new Promise(resolve=>{
+    const pending={i,resolve,timer:null};
+    pending.timer=setTimeout(()=>{
+      if(troopEvenOutRun.pending===pending)troopEvenOutRun.pending=null;
+      resolve({ok:false,message:'timeout menunggu feedback transfer'});
+    },timeoutMs);
+    troopEvenOutRun.pending=pending;
+  });
+}
+
 function setBankBalance(value){bankClient.balance=value;bankBalanceEl.textContent=formatNominal(value)}
 function bankStatus(text,ok=false){flatStatusEl.textContent=text;flatStatusEl.style.color=ok?"#22c55e":"#94a3b8"}
 function startBankPing(){stopBankPing();bankClient.pingTimer=setInterval(()=>{if(bankClient.ws?.readyState===WebSocket.OPEN)bankClient.ws.send(JSON.stringify({type:"ping"}))},40000)}
@@ -1887,6 +1921,91 @@ async function flatAll(){
   }
 }
 
+
+async function evenOutTroopBalances(){
+  if(troopEvenOutRun.active){troopEvenOutStatus('Proses ratakan saldo masih berjalan.');return}
+  if(flatRun.active||flatRun.pending.length){troopEvenOutStatus('Selesaikan proses FLAT bank terlebih dahulu.');return}
+  const pin=document.getElementById('pinTroop').value;
+  if(!pin){troopEvenOutStatus('PIN Troop wajib diisi.');return}
+  const usernames=Array.from({length:N},(_,i)=>cred(i).username);
+  if(usernames.some(x=>!x)||new Set(usernames.map(x=>x.toLowerCase())).size!==N){
+    troopEvenOutStatus('Pastikan username WS1–WS10 terisi dan semuanya unik.');return;
+  }
+  const offline=[];
+  for(let i=0;i<N;i++){
+    if(!clients[i].loggedIn||clients[i].ws?.readyState!==WebSocket.OPEN)offline.push(`WS${i+1}`);
+  }
+  if(offline.length){troopEvenOutStatus(`Dibatalkan: ${offline.join(', ')} belum online.`);return}
+  const button=document.getElementById('evenOutTroopButton');
+  troopEvenOutRun.active=true;
+  button.disabled=true;
+  let transferCount=0,totalTransferred=0;
+  try{
+    troopEvenOutStatus('Memperbarui saldo awal WS1–WS10...');
+    const refreshed=await refreshTroopBalancesBeforeFlat();
+    if(!refreshed)throw new Error('Timeout saat membaca saldo troop.');
+    let balances=Array.from({length:N},(_,i)=>troopBalance(i));
+    if(balances.some(v=>v===null||!Number.isFinite(v)||v<0))throw new Error('Ada saldo WS yang belum terbaca atau tidak valid.');
+    const maxTransfers=100;
+    while(transferCount<maxTransfers){
+      const average=balances.reduce((a,b)=>a+b,0)/N;
+      const donors=balances.map((balance,i)=>({i,balance,gap:balance-average}))
+        .filter(x=>x.gap>0.0005 && x.balance>10).sort((a,b)=>b.gap-a.gap);
+      const receivers=balances.map((balance,i)=>({i,balance,gap:average-balance}))
+        .filter(x=>x.gap>0.0005).sort((a,b)=>b.gap-a.gap);
+      let pair=null,amount=0;
+      for(const donor of donors){
+        for(const receiver of receivers){
+          const possible=Math.min(donor.gap,receiver.gap);
+          const milli=Math.floor(possible*1000+1e-7);
+          if(milli>=1){pair={donor,receiver};amount=milli/1000;break}
+        }
+        if(pair)break;
+      }
+      if(!pair)break;
+      const {donor,receiver}=pair;
+      const milli=Math.round(amount*1000);
+      const key=transferId();
+      troopEvenOutStatus(`Mengirim ${formatNominal(amount)} CR: WS${donor.i+1} → WS${receiver.i+1}...`);
+      const feedback=waitForTroopTransfer(donor.i);
+      const sent=send(donor.i,{
+        type:'wallet.transfer',
+        to_username:usernames[receiver.i],
+        amount_milli_cr:milli,
+        pin,
+        idempotency_key:key
+      },true);
+      if(!sent){
+        settleTroopTransfer(donor.i,false,'Socket pengirim tidak tersedia');
+        const result=await feedback;
+        throw new Error(result.message||'Gagal mengirim transfer.');
+      }
+      const result=await feedback;
+      if(!result.ok)throw new Error(`WS${donor.i+1} → WS${receiver.i+1}: ${result.message}`);
+      transferCount++;
+      totalTransferred+=amount;
+      troopEvenOutStatus(`Transfer ${transferCount} berhasil. Memperbarui saldo semua WS...`);
+      const refreshedAfter=await refreshTroopBalancesBeforeFlat();
+      if(!refreshedAfter)throw new Error('Timeout saat verifikasi saldo setelah transfer.');
+      balances=Array.from({length:N},(_,i)=>troopBalance(i));
+      if(balances.some(v=>v===null||!Number.isFinite(v)||v<0))throw new Error('Saldo tidak lengkap setelah transfer; proses dihentikan demi keamanan.');
+    }
+    const finalAverage=balances.reduce((a,b)=>a+b,0)/N;
+    const spread=Math.max(...balances)-Math.min(...balances);
+    const resultText=spread<=0.001
+      ? `Saldo WS1–WS10 sudah rata. Rata-rata ${formatNominal(finalAverage)} CR.`
+      : `Proses selesai: ${transferCount} transfer (${formatNominal(totalTransferred)} CR). Sisa selisih ${formatNominal(spread)} CR karena tidak ada WS dengan saldo lebih dari 10 CR yang dapat mengirim untuk mengurangi selisih.`;
+    troopEvenOutStatus(resultText,spread<=0.001);
+  }catch(error){
+    troopEvenOutStatus(`Dihentikan: ${error.message||String(error)}. Periksa saldo terbaru sebelum mencoba lagi.`);
+    refreshAllTroopBalances();
+  }finally{
+    troopEvenOutRun.active=false;
+    troopEvenOutRun.pending=null;
+    button.disabled=false;
+  }
+}
+
 function safeDownloadName(name){
   let n=String(name||"migsock").trim().replace(/\.(json|txt)$/i,"").replace(/[^a-zA-Z0-9._ -]/g,"_");
   if(!n)n="migsock";
@@ -2043,7 +2162,7 @@ document.getElementById("headerLogout").onclick=async function(){
     button.disabled=false;
     alert(error.message||"Logout panel gagal. Silakan coba lagi.");
   }
-};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();void syncBackendAutoConfig();
+};document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("evenOutTroopButton").onclick=evenOutTroopBalances;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("generateTroop").onclick=generateTroop;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("saveConfig").onclick=saveConfig;document.getElementById("loadConfig").onclick=loadConfig;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;document.getElementById("saveSet").onclick=saveKickSet;document.getElementById("loadSet").onclick=loadKickSet;document.getElementById("resetCountdown").onclick=resetCountdownTimer;render();refreshUserList();updateTargetCount();void syncBackendAutoConfig();
 
 /* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
 (function(){
