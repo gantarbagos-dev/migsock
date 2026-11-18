@@ -422,7 +422,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     <div class="setting-row save-row">
       <div class="field"><label for="saveLoad">SaveLoad</label><input id="saveLoad" value="multi1" placeholder="Nama simpanan, contoh: multi1" autocomplete="off"><select id="saveLoadFormat" aria-label="Format file SaveLoad"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><input id="loadFile" type="file" accept=".json,.txt,application/json,text/plain" style="display:none"></div>
       <div class="field"><label>&nbsp;</label><button id="saveConfig" class="primary">SAVE</button></div>
-      <div class="field"><label>&nbsp;</label><button id="loadConfig">LOAD</button></div>
+      <div class="field"><label>&nbsp;</label><button id="loadConfig" type="button">LOAD</button></div>
     </div>
   </div>
 
@@ -2176,6 +2176,22 @@ function applyConfig(cfg){
   }
   refreshUserList();
 }
+function setSaveLoadStatus(message,isError=false){
+  const status=document.getElementById("saveLoadStatus");
+  if(!status)return;
+  status.textContent=message;
+  status.style.color=isError?"#e57373":"";
+}
+function openSaveLoadFilePicker(){
+  const picker=document.getElementById("loadFile");
+  try{
+    // Keep the picker call synchronous inside the user's button press.
+    picker.click();
+  }catch(error){
+    console.error("Pemilih file SaveLoad gagal dibuka:",error);
+    setSaveLoadStatus("Tidak dapat membuka pemilih file. Coba tekan LOAD lagi.",true);
+  }
+}
 function loadConfig(){
   const name=saveLoadEl.value.trim();
   if(name){
@@ -2184,28 +2200,46 @@ function loadConfig(){
       if(saved){
         applyConfig(JSON.parse(saved));
         document.getElementById("saveLoadFormat").value="json";
+        setSaveLoadStatus("Berhasil memuat data lokal: "+name);
         return;
       }
     }catch(error){
       console.error("Load lokal gagal:",error);
+      setSaveLoadStatus("Data lokal gagal dibaca. Silakan pilih file JSON/TXT.",true);
     }
   }
-  document.getElementById("loadFile").click();
+  setSaveLoadStatus("Pilih file JSON atau TXT untuk dimuat.");
+  openSaveLoadFilePicker();
 }
 document.getElementById("loadFile").addEventListener("change",async function(e){
   const file=e.target.files?.[0];
-  if(!file)return;
+  if(!file){
+    setSaveLoadStatus("Tidak ada file yang dipilih.");
+    return;
+  }
   try{
-    const text=await file.text();
-    const cfg=JSON.parse(text.replace(/^\\uFEFF/,"").trim());
+    const raw=typeof file.text==="function"
+      ? await file.text()
+      : await new Promise((resolve,reject)=>{
+          const reader=new FileReader();
+          reader.onload=()=>resolve(String(reader.result??""));
+          reader.onerror=()=>reject(reader.error||new Error("File tidak dapat dibaca."));
+          reader.readAsText(file);
+        });
+    const cfg=JSON.parse(raw.replace(/^\\uFEFF/,"").trim());
     applyConfig(cfg);
     document.getElementById("saveLoad").value=file.name.replace(/\.(json|txt)$/i,"");
     document.getElementById("saveLoadFormat").value=/\.txt$/i.test(file.name)?"txt":"json";
+    setSaveLoadStatus("Berhasil memuat file: "+file.name);
   }catch(err){
     console.error("LOAD SaveLoad gagal:",err);
+    setSaveLoadStatus("Gagal memuat file: "+(err?.message||"format tidak valid."),true);
   }finally{
     e.target.value="";
   }
+});
+document.getElementById("loadFile").addEventListener("cancel",function(){
+  setSaveLoadStatus("Pemilihan file dibatalkan.");
 });
 document.getElementById("headerLogout").onclick=async function(){
   const button=this;
