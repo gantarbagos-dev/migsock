@@ -68,14 +68,15 @@ BROWSER_CLIENTS = set()
 DETACHED_UPSTREAM = {}
 
 
-def _current_user(request):
-    return get_session(request.cookies.get(SESSION_COOKIE))
+async def _current_user(request):
+    # SQLite access is synchronous; keep it off aiohttp's event-loop thread.
+    return await asyncio.to_thread(get_session, request.cookies.get(SESSION_COOKIE))
 
 
 def require_auth(handler):
     @wraps(handler)
     async def wrapped(request):
-        user = _current_user(request)
+        user = await _current_user(request)
         if not user:
             if request.path.startswith("/api/") or request.path == "/ws":
                 return json_response({"ok": False, "error": "Login diperlukan"}, status=401)
@@ -1107,7 +1108,7 @@ async def reset_troop_session(request):
 def require_admin(handler):
     @wraps(handler)
     async def wrapped(request):
-        user = _current_user(request)
+        user = await _current_user(request)
         if not user:
             if request.path.startswith("/api/"):
                 return json_response({"ok": False, "error": "Login diperlukan"}, status=401)
@@ -1143,7 +1144,7 @@ async def auth_login(request):
         return json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
     if not username or not password:
         return json_response({"ok": False, "error": "Username dan password wajib diisi"}, status=400)
-    user = authenticate(username, password)
+    user = await asyncio.to_thread(authenticate, username, password)
     if not user:
         return json_response({"ok": False, "error": "Username atau password salah"}, status=401)
     device_id = None
@@ -1152,9 +1153,9 @@ async def auth_login(request):
         device_secret = str(data.get("deviceSecret", ""))
         device_label = str(data.get("deviceLabel", "Perangkat"))
         try:
-            device_status = register_or_check_device(
-                user["username"], device_id, device_secret, device_label,
-                request.headers.get("User-Agent", ""),
+            device_status = await asyncio.to_thread(
+                register_or_check_device, user["username"], device_id, device_secret,
+                device_label, request.headers.get("User-Agent", "")
             )
         except ValueError as e:
             return json_response({"ok": False, "error": str(e)}, status=400)
@@ -1169,7 +1170,7 @@ async def auth_login(request):
             return json_response({"ok": False, "deviceRevoked": True, "error": "Akses perangkat telah dicabut admin."}, status=403)
         if device_status != "approved":
             return json_response({"ok": False, "error": "Kredensial perangkat tidak valid. Hapus data perangkat lokal lalu ajukan pendaftaran baru."}, status=403)
-    token = create_session(user, device_id=device_id)
+    token = await asyncio.to_thread(create_session, user, device_id)
     response = json_response({"ok": True, "user": user})
     # Default: do not persist the login cookie beyond the browser session.
     # When "Simpan sesi login" is checked, persist it for the configured TTL.
@@ -1181,7 +1182,7 @@ async def auth_login(request):
         "path": "/",
     }
     if remember_session:
-        cookie_options["max_age"] = get_session_ttl()
+        cookie_options["max_age"] = await asyncio.to_thread(get_session_ttl)
     response.set_cookie(SESSION_COOKIE, token, **cookie_options)
     return response
 
@@ -1202,14 +1203,14 @@ async def auth_logout(request):
                 await ws.close(code=1000, message=b"panel logout")
         except Exception:
             pass
-    destroy_session(session_id)
+    await asyncio.to_thread(destroy_session, session_id)
     response = json_response({"ok": True})
     response.del_cookie(SESSION_COOKIE, path="/")
     return response
 
 
 async def auth_me(request):
-    user = _current_user(request)
+    user = await _current_user(request)
     if not user:
         return json_response({"ok": False, "authenticated": False}, status=401)
     return json_response({"ok": True, "authenticated": True, "user": user})
@@ -1217,6 +1218,8 @@ async def auth_me(request):
 
 UPDATE_DIR = ROOT.parent / "updates"
 UPDATE_MAX_BYTES = 500 * 1024 * 1024
+_UPDATE_HASH_CACHE = {}
+_UPDATE_HASH_LOCK = asyncio.Lock()
 
 
 def _latest_update_file():
@@ -1235,11 +1238,28 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
+async def _cached_update_sha256(path):
+    """Hash update files off-loop and reuse hashes while file metadata is unchanged."""
+    async with _UPDATE_HASH_LOCK:
+        try:
+            stat = await asyncio.to_thread(path.stat)
+        except FileNotFoundError:
+            return None
+        cache_key = str(path.resolve())
+        fingerprint = (stat.st_size, stat.st_mtime_ns)
+        cached = _UPDATE_HASH_CACHE.get(cache_key)
+        if cached and cached[0] == fingerprint:
+            return cached[1]
+        digest = await asyncio.to_thread(_sha256_file, path)
+        _UPDATE_HASH_CACHE[cache_key] = (fingerprint, digest)
+        return digest
+
+
 async def update_check(request):
-    update_file = _latest_update_file()
+    update_file = await asyncio.to_thread(_latest_update_file)
     if update_file is None:
         return json_response({"ok": True, "available": False, "up_to_date": True})
-    digest = _sha256_file(update_file)
+    digest = await _cached_update_sha256(update_file)
     # Native app/WebView may pass its installed APK SHA-256 as installedSha256.
     # A normal browser page cannot inspect the APK installed on the device.
     installed_hash = str(request.query.get("installedSha256", "")).strip().lower()
@@ -1249,7 +1269,7 @@ async def update_check(request):
 
 
 async def update_download(request):
-    update_file = _latest_update_file()
+    update_file = await asyncio.to_thread(_latest_update_file)
     if update_file is None:
         return json_response({"ok": True, "available": False, "message": "Your software already uptodate"}, status=404)
     return web.FileResponse(update_file, headers={"Content-Disposition": f'attachment; filename="{update_file.name}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
@@ -1271,7 +1291,7 @@ async def admin_update_upload(request):
         filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original).strip(" .")[:180]
         if not filename or filename in {".", ".."}:
             filename = "migsock-update.apk"
-        UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(UPDATE_DIR.mkdir, parents=True, exist_ok=True)
         temp_path = UPDATE_DIR / (".upload-" + uuid.uuid4().hex)
         total = 0
         digest = hashlib.sha256()
@@ -1285,15 +1305,15 @@ async def admin_update_upload(request):
                     temp_path.unlink(missing_ok=True)
                     return json_response({"ok": False, "error": "Ukuran file maksimal 500 MB"}, status=413)
                 digest.update(chunk)
-                out.write(chunk)
+                await asyncio.to_thread(out.write, chunk)
 
         if total == 0:
             temp_path.unlink(missing_ok=True)
             return json_response({"ok": False, "error": "File kosong atau gagal dibaca browser"}, status=400)
 
         file_hash = digest.hexdigest()
-        current = _latest_update_file()
-        if current is not None and current.stat().st_size == total and _sha256_file(current) == file_hash:
+        current = await asyncio.to_thread(_latest_update_file)
+        if current is not None and current.stat().st_size == total and await _cached_update_sha256(current) == file_hash:
             temp_path.unlink(missing_ok=True)
             return json_response({"ok": True, "unchanged": True, "filename": current.name, "size": total, "sha256": file_hash})
 
@@ -1302,6 +1322,7 @@ async def admin_update_upload(request):
         if current is not None and current != target:
             current.unlink(missing_ok=True)
         temp_path.replace(target)
+        _UPDATE_HASH_CACHE.clear()
         temp_path = None
         return json_response({"ok": True, "filename": filename, "size": total, "sha256": file_hash})
     except web.HTTPRequestEntityTooLarge:
@@ -1316,25 +1337,26 @@ async def admin_update_upload(request):
 
 @require_admin
 async def admin_update_delete(request):
-    update_file = _latest_update_file()
+    update_file = await asyncio.to_thread(_latest_update_file)
     if update_file is not None:
         update_file.unlink(missing_ok=True)
+        _UPDATE_HASH_CACHE.clear()
     return json_response({"ok": True, "deleted": update_file is not None})
 
 
 @require_admin
 async def admin_update_status(request):
-    update_file = _latest_update_file()
+    update_file = await asyncio.to_thread(_latest_update_file)
     if update_file is None:
         return json_response({"ok": True, "available": False})
-    return json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": _sha256_file(update_file)})
+    return json_response({"ok": True, "available": True, "filename": update_file.name, "size": update_file.stat().st_size, "sha256": await _cached_update_sha256(update_file)})
 
 
 @require_admin
 async def admin_change_password(request):
     try:
         data = await request.json(loads=json_loads)
-        change_password(request["user"]["username"], str(data.get("password", "")))
+        await asyncio.to_thread(change_password, request["user"]["username"], str(data.get("password", "")))
         return json_response({"ok": True})
     except ValueError as e:
         return json_response({"ok": False, "error": str(e)}, status=400)
@@ -1342,13 +1364,13 @@ async def admin_change_password(request):
 
 @require_admin
 async def admin_users(request):
-    return json_response({"ok": True, "users": list_users()})
+    return json_response({"ok": True, "users": await asyncio.to_thread(list_users)})
 
 
 @require_admin
 async def admin_session_settings(request):
     if request.method == "GET":
-        ttl = get_session_ttl()
+        ttl = await asyncio.to_thread(get_session_ttl)
         return json_response({
             "ok": True,
             "seconds": ttl,
@@ -1359,7 +1381,7 @@ async def admin_session_settings(request):
     try:
         data = await request.json(loads=json_loads)
         seconds = int(data.get("seconds"))
-        ttl = set_session_ttl(seconds)
+        ttl = await asyncio.to_thread(set_session_ttl, seconds)
         return json_response({"ok": True, "seconds": ttl, "minutes": ttl // 60})
     except (TypeError, ValueError):
         return json_response({"ok": False, "error": "Durasi session tidak valid"}, status=400)
@@ -1369,7 +1391,7 @@ async def admin_session_settings(request):
 async def admin_create_user(request):
     try:
         data = await request.json(loads=json_loads)
-        create_user(str(data.get("username", "")), str(data.get("password", "")), "user")
+        await asyncio.to_thread(create_user, str(data.get("username", "")), str(data.get("password", "")), "user")
         return json_response({"ok": True})
     except ValueError as e:
         return json_response({"ok": False, "error": str(e)}, status=400)
@@ -1382,7 +1404,7 @@ async def admin_set_user_enabled(request):
     username = request.match_info.get("username", "")
     try:
         data = await request.json(loads=json_loads)
-        set_enabled(username, bool(data.get("enabled")))
+        await asyncio.to_thread(set_enabled, username, bool(data.get("enabled")))
         return json_response({"ok": True})
     except ValueError as e:
         return json_response({"ok": False, "error": str(e)}, status=400)
@@ -1392,7 +1414,7 @@ async def admin_set_user_enabled(request):
 async def admin_delete_user(request):
     username = request.match_info.get("username", "")
     try:
-        delete_user(username)
+        await asyncio.to_thread(delete_user, username)
         return json_response({"ok": True})
     except ValueError as e:
         return json_response({"ok": False, "error": str(e)}, status=400)
@@ -1400,14 +1422,14 @@ async def admin_delete_user(request):
 @require_admin
 async def admin_devices(request):
     status = str(request.query.get("status", "")).strip().lower()
-    return json_response({"ok": True, "devices": list_devices(status)})
+    return json_response({"ok": True, "devices": await asyncio.to_thread(list_devices, status)})
 
 
 @require_admin
 async def admin_delete_device(request):
     device_id = request.match_info.get("device_id", "")
     try:
-        result = delete_device(device_id)
+        result = await asyncio.to_thread(delete_device, device_id)
         return json_response({"ok": True, "device": result})
     except ValueError as e:
         return json_response({"ok": False, "error": str(e)}, status=404)
@@ -1422,7 +1444,7 @@ async def admin_device_action(request):
     if not status:
         return json_response({"ok": False, "error": "Aksi perangkat tidak valid"}, status=400)
     try:
-        result = set_device_status(device_id, status, request["user"]["username"])
+        result = await asyncio.to_thread(set_device_status, device_id, status, request["user"]["username"])
         return json_response({"ok": True, "device": result})
     except ValueError as e:
         return json_response({"ok": False, "error": str(e)}, status=404)

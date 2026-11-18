@@ -1,23 +1,35 @@
-# Catatan Optimasi Project Duel Bot
+# Catatan Penyempurnaan Project
 
 ## Prinsip
-Optimasi dilakukan secara konservatif: tidak mengubah protokol WebSocket, payload, urutan proses bisnis, konfigurasi, batas rate-limit, autentikasi, maupun otorisasi.
+Penyempurnaan dilakukan tanpa menambah fitur, mengubah tampilan, mengubah kontrak API, mengubah payload/protokol WebSocket, atau mengubah alur bisnis yang sudah ada.
 
-## Perubahan
-1. `public/index.html` — rendering daftar USER menggunakan `DocumentFragment` dan `replaceChildren()` agar perubahan DOM dilakukan sekaligus, mengurangi operasi DOM berulang saat snapshot participant diperbarui.
-2. `public/index.html` — pencarian target menggunakan `appState.targets` (`Map`) sehingga pengecekan duplikat menjadi lookup konstan, bukan pemindaian seluruh elemen DOM.
-3. `public/index.html` — sinkronisasi indeks target saat aksi `List User` mengosongkan daftar target, agar lookup Map tetap sama dengan tampilan.
-4. `check.js` — menerapkan optimasi rendering dan lookup target yang sama.
-5. `extracted.js` — menerapkan optimasi rendering daftar USER; lookup target yang sudah memakai indeks `Map` dipertahankan.
+## Perubahan pada build ini
+
+1. `app.py` — akses database autentikasi/session yang dipanggil dari handler HTTP dipindahkan ke `asyncio.to_thread()`. Operasi SQLite sinkron tidak lagi menahan thread event loop saat request diproses.
+2. `app.py` — pembacaan dan hashing file update dijalankan di thread terpisah agar pemeriksaan file besar tidak memblokir event loop.
+3. `app.py` — hasil SHA-256 file update di-cache berdasarkan path, ukuran, dan `mtime_ns`. File yang tidak berubah tidak perlu di-hash ulang pada setiap pemeriksaan.
+4. `app.py` — penulisan chunk upload file update dipindahkan ke thread terpisah, dengan urutan penulisan tetap serial dan proses publikasi file tetap atomik.
+5. `app.py` — pencarian file update dan pembuatan direktori update dijalankan di thread terpisah.
 
 ## Bagian yang sengaja tidak diubah
-- `app.py`: dispatch KICK, pengiriman WebSocket, timer countdown, rate-limit, retry/replacement, dan batas otorisasi.
-- `auth.py` dan `auth.db`: autentikasi, session, perangkat, serta data akun.
-- Kontrak API, format payload, file konfigurasi, dan fungsi UI lainnya.
 
-Bagian backend/protokol tidak diubah karena perubahan agresif tanpa pengujian integrasi terhadap server upstream berisiko mengubah perilaku project.
+- Dispatch Kick/KickAll, timer countdown, penjadwalan task, retry/replacement, Delay Target/Delay Socket, dan rate-limit.
+- Pengiriman WebSocket upstream dan format payload.
+- UI, sinkronisasi konfigurasi frontend, dan interval countdown.
+- `auth.py`, skema database, autentikasi, session, perangkat, dan otorisasi.
+- Kontrak endpoint serta format respons API.
 
-## Validasi
-- `app.py` dan `auth.py`: lolos kompilasi Python.
-- `check.js`, `extracted.js`, dan JavaScript inline pada `public/index.html`: lolos `node --check`.
-- Tidak ada klaim benchmark runtime; peningkatan yang diterapkan adalah pengurangan kerja DOM dan pencarian target pada jalur frontend.
+Bagian yang memicu tindakan massal dan batas pengiriman tidak dioptimalkan atau dipercepat. Perubahan dibatasi pada efisiensi I/O, hashing, dan pemrosesan request umum.
+
+## Validasi yang dilakukan
+
+- `app.py` dan `auth.py`: lolos parsing/kompilasi Python.
+- `app.py`: berhasil di-import dalam lingkungan pemeriksaan.
+- `check.js`, `extracted.js`, dan JavaScript inline `public/index.html`: lolos `node --check`.
+- Tidak ada klaim benchmark runtime atau peningkatan persentase; dampak performa perlu diukur pada server target.
+
+## Catatan distribusi dan keamanan
+
+- `auth.db` dan `__pycache__` tidak disertakan dalam ZIP hasil agar database sesi/akun lokal dan bytecode mesin tidak ikut terdistribusi.
+- Saat aplikasi dijalankan, `init_auth_db()` membuat database baru sesuai mekanisme aplikasi yang sudah ada.
+- Kredensial bootstrap yang sudah ada di `auth.py` tidak diubah dalam penyempurnaan ini. Pastikan kredensial admin awal segera diganti setelah deployment.
