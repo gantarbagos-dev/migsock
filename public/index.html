@@ -246,7 +246,9 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 .header-logout{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:42px;height:42px;min-height:42px;padding:9px;border:1px solid rgba(248,113,113,.35)!important;border-radius:13px;background:linear-gradient(145deg,rgba(190,24,93,.95),rgba(185,28,28,.95))!important;color:#fff!important;box-shadow:0 5px 16px rgba(185,28,28,.22)!important}
 .header-logout svg{display:block;width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .header-logout:focus-visible{outline:2px solid #fca5a5;outline-offset:3px}
-\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n</style>
+\n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n/* File inputs stay rendered (not display:none) so Android browsers/WebView can open the native picker reliably. */
+.native-file-picker{position:fixed!important;left:0!important;top:0!important;width:1px!important;height:1px!important;min-width:1px!important;min-height:1px!important;padding:0!important;margin:0!important;border:0!important;opacity:.01!important;overflow:hidden!important;z-index:-1!important;pointer-events:none!important}
+</style>
 
 <style id="suicide-toggle-style">
 .suicide-toggle{display:block;box-sizing:border-box;width:100%;min-width:0;height:30px;padding:0 3px;border-radius:8px;border:1px solid rgba(100,116,139,.55);font-size:9px;font-weight:800;letter-spacing:0;line-height:1;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:clip;transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease}
@@ -420,7 +422,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 
   <div class="panel section-card save-card">
     <div class="setting-row save-row">
-      <div class="field"><label for="saveLoad">SaveLoad</label><input id="saveLoad" value="multi1" placeholder="Nama simpanan, contoh: multi1" autocomplete="off"><select id="saveLoadFormat" aria-label="Format file SaveLoad"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><input id="loadFile" type="file" accept=".json,.txt,application/json,text/plain" style="display:none"></div>
+      <div class="field"><label for="saveLoad">SaveLoad</label><input id="saveLoad" value="multi1" placeholder="Nama simpanan, contoh: multi1" autocomplete="off"><select id="saveLoadFormat" aria-label="Format file SaveLoad"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><input id="loadFile" type="file" accept=".json,.txt,application/json,text/plain" class="native-file-picker" tabindex="-1" aria-hidden="true"></div>
       <div class="field"><label>&nbsp;</label><button id="saveConfig" class="primary">SAVE</button></div>
       <div class="field"><label>&nbsp;</label><button id="loadConfig" type="button">LOAD</button></div>
     </div>
@@ -515,7 +517,7 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
         <div class="field kick-save-field"><label for="saveLoadSet">SaveLoad</label><div class="kick-save-input-row"><input id="saveLoadSet" value="kickset1" placeholder="Nama file set" autocomplete="off"><select id="saveLoadSetFormat" aria-label="Format file Save Set"><option value="json" selected>JSON</option><option value="txt">TXT</option></select><button id="saveSet" class="primary" type="button"><span class="kick-btn-icon" aria-hidden="true">▣</span><span>SAVE SET</span></button><button id="loadSet" type="button"><span class="kick-btn-icon kick-folder-icon" aria-hidden="true">📂</span><span>LOAD SET</span></button></div>
         </div>
       </div>
-      <input id="loadSetFile" type="file" accept=".json,.txt,application/json,text/plain" style="display:none">
+      <input id="loadSetFile" type="file" accept=".json,.txt,application/json,text/plain" class="native-file-picker" tabindex="-1" aria-hidden="true">
       <div class="kick-action-grid kick-mode-actions">
         <button id="suicideToggle" type="button" onclick="toggleSuicide()" class="suicide-toggle suicide-off" title="Suicide OFF; 0/3 username" aria-pressed="false" aria-label="Suicide OFF; 0 of 3 usernames processed">☠️ OFF</button>
         <button id="kickAll" class="danger kickall-side" type="button"><span class="kick-btn-icon" aria-hidden="true">🎯</span><span>KICK ALL</span></button>
@@ -2043,8 +2045,29 @@ async function saveKickSet(){
   const blob=new Blob([JSON.stringify(collectKickSet(),null,2)],{type:format==="json"?"application/json":"text/plain"});
   await saveBlobToPhoneFolder("set",safeName.replace(/\.(json|txt)$/i,"")+"."+format,blob);
 }
+function openNativeFilePicker(input){
+  if(!input) return false;
+  // Keep this call synchronous with the user's button tap (required by mobile browsers/WebView).
+  try{
+    if(typeof input.showPicker === "function"){
+      input.showPicker();
+      return true;
+    }
+  }catch(error){
+    // Some WebViews expose showPicker but reject it; fall back to click().
+    console.debug("showPicker tidak tersedia, memakai click():",error);
+  }
+  try{
+    input.click();
+    return true;
+  }catch(error){
+    console.error("Pemilih file gagal dibuka:",error);
+    return false;
+  }
+}
 function loadKickSet(){
-  document.getElementById("loadSetFile").click();
+  const picker=document.getElementById("loadSetFile");
+  if(!openNativeFilePicker(picker)) console.error("Tidak dapat membuka pemilih file LOAD SET.");
 }
 document.getElementById("loadSetFile").addEventListener("change",async function(){
   const file=this.files?.[0];
@@ -2184,11 +2207,8 @@ function setSaveLoadStatus(message,isError=false){
 }
 function openSaveLoadFilePicker(){
   const picker=document.getElementById("loadFile");
-  try{
-    // Keep the picker call synchronous inside the user's button press.
-    picker.click();
-  }catch(error){
-    console.error("Pemilih file SaveLoad gagal dibuka:",error);
+  // Called directly from LOAD's click handler; do not await before opening it.
+  if(!openNativeFilePicker(picker)){
     setSaveLoadStatus("Tidak dapat membuka pemilih file. Coba tekan LOAD lagi.",true);
   }
 }
