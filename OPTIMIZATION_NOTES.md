@@ -10,6 +10,7 @@ Penyempurnaan dilakukan tanpa menambah fitur, mengubah tampilan, mengubah kontra
 3. `app.py` — hasil SHA-256 file update di-cache berdasarkan path, ukuran, dan `mtime_ns`. File yang tidak berubah tidak perlu di-hash ulang pada setiap pemeriksaan.
 4. `app.py` — penulisan chunk upload file update dipindahkan ke thread terpisah, dengan urutan penulisan tetap serial dan proses publikasi file tetap atomik.
 5. `app.py` — pencarian file update dan pembuatan direktori update dijalankan di thread terpisah.
+6. `app.py` — daftar target dinormalisasi dan duplikat yang berbeda hanya pada huruf besar/kecil dibuang, baik pada konfigurasi otomatis maupun saat menjalankan job. Ini mencegah target yang sama diproses berulang akibat input duplikat; urutan target pertama tetap dipertahankan.
 
 ## Bagian yang sengaja tidak diubah
 

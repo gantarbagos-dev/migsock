@@ -100,6 +100,21 @@ AUTO_KICK_LAST_EVENT = {}
 def _norm_room_key(room):
     return str(room or "").strip().casefold()
 
+
+def _normalize_target_usernames(values):
+    """Normalize a target list and remove case-insensitive duplicates in order."""
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    normalized = []
+    seen = set()
+    for value in values:
+        target = str(value or "").strip()
+        key = target.casefold()
+        if target and key not in seen:
+            seen.add(key)
+            normalized.append(target)
+    return normalized
+
 def _event_payload_dict(payload):
     if not isinstance(payload, dict):
         return {}
@@ -646,7 +661,7 @@ async def configure_auto_kick(request):
     try:
         data = await request.json(loads=json_loads)
         room = str(data.get("room", "")).strip()
-        targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
+        targets = _normalize_target_usernames(data.get("targets", []))
         countdown_ms = max(0, min(60000, int(data.get("countdownMs", 60000))))
         trigger_ms = max(0, min(countdown_ms, int(data.get("timerKickall", 1500))))
         loops = max(1, min(200, int(data.get("loop", 1))))
@@ -763,7 +778,7 @@ async def stop_kick_loop(request):
 
 def _launch_kick_job(session_id, data):
     room = str(data.get("room", "")).strip()
-    targets = [str(x).strip() for x in data.get("targets", []) if str(x).strip()]
+    targets = _normalize_target_usernames(data.get("targets", []))
     try:
         loops = max(1, min(200, int(data.get("loop", 1))))
         kick_limit_per_ws = min(KICK_MAX_PER_WINDOW, max(1, int(data.get("kickLimitPerWs") or 150)))
