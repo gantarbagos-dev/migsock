@@ -249,6 +249,8 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
 \n/* Format selectors requested beside each SaveLoad textbox. */\n.save-row{grid-template-columns:minmax(0,1fr) 76px auto auto!important;align-items:end!important}\n.save-row .field:first-child{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:5px;align-items:end}.save-row .field:first-child label{grid-column:1/-1}.save-row #saveLoadFormat{min-width:0;width:100%;height:36px;box-sizing:border-box}\n.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 62px 78px 78px!important}\n.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{width:100%;min-width:0;height:36px;min-height:36px;box-sizing:border-box;padding:3px;font-size:10px}\n@media(max-width:390px){.kick-layout-option-b .kick-save-input-row{grid-template-columns:minmax(0,1fr) 48px 66px 66px!important;gap:4px!important}.kick-layout-option-b .kick-save-input-row #saveLoadSetFormat{font-size:9px;padding:2px}}\n/* Hide native file inputs visually without display:none/visibility:hidden.
    Android Chrome/WebView may refuse to open a picker for a fully hidden input. */
 input[type="file"],.native-file-picker{display:block!important;position:fixed!important;left:0!important;top:0!important;width:1px!important;height:1px!important;min-width:1px!important;min-height:1px!important;padding:0!important;margin:0!important;border:0!important;opacity:0!important;clip-path:inset(50%)!important;overflow:hidden!important;pointer-events:none!important;z-index:-1!important}
+
+
 </style>
 
 <style id="suicide-toggle-style">
@@ -597,13 +599,13 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   <section id="panelDuel" class="tab-panel" role="tabpanel">
   <div class="panel section-card room-users-card">
-    <div class="lists-grid">
-      <div>
-        <div class="listtitle"><span>USER</span><span id="userCount">0</span></div>
+    <div class="lists-grid illustration-lists">
+      <div class="list-card user-list-card">
+        <div class="listtitle"><span>USER</span><span id="userCount" class="list-count user-count">0</span></div>
         <div id="userList" class="user-box" aria-label="List username"></div>
       </div>
-      <div>
-        <div class="listtitle"><span>TARGET</span><span style="display:flex;align-items:center;gap:6px"><span id="targetCount">0</span><button id="clearTarget" class="danger trash-btn" title="Hapus semua username TARGET" aria-label="Hapus semua username TARGET">🗑️</button></span></div>
+      <div class="list-card target-list-card">
+        <div class="listtitle"><span>TARGET</span><span class="target-head-actions"><span id="targetCount" class="list-count target-count">0</span><button id="clearTarget" class="danger trash-btn" title="Hapus semua username TARGET" aria-label="Hapus semua username TARGET"></button></span></div>
         <div id="targetList" aria-label="List target room"></div>
       </div>
     </div>
@@ -2492,6 +2494,38 @@ setInterval(syncBackendAutoConfig,500);
   .troop-row .field label { font-size: 9px !important; letter-spacing: .3px !important; }
   .troop-row .field input { width: 100%; padding-left: 6px; padding-right: 6px; font-size: 11px !important; }
 }
+
+
+/* Illustration-inspired USER / TARGET panels — visual only */
+.room-users-card{background:linear-gradient(145deg,rgba(12,19,39,.98),rgba(7,12,27,.98))!important;border:1px solid rgba(86,115,178,.32)!important;border-radius:22px!important;padding:clamp(10px,1.8vw,18px)!important}
+.illustration-lists{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:clamp(8px,1.5vw,16px)!important;align-items:stretch}
+.illustration-lists>.list-card{min-width:0;padding:10px!important;border-radius:17px!important;overflow:hidden;background:linear-gradient(155deg,rgba(15,29,58,.94),rgba(7,13,29,.98))!important;border:1px solid rgba(45,139,255,.62)!important;box-shadow:inset 0 1px rgba(255,255,255,.045),0 8px 24px rgba(0,0,0,.2)!important}
+.illustration-lists>.target-list-card{border-color:rgba(168,85,247,.72)!important;background:linear-gradient(155deg,rgba(43,20,73,.72),rgba(10,13,31,.98))!important;box-shadow:inset 0 1px rgba(255,255,255,.045),0 8px 24px rgba(0,0,0,.2)!important}
+.illustration-lists .listtitle{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:6px!important;min-height:38px!important;margin:0 0 9px!important;padding:0 2px!important}
+.illustration-lists .listtitle>span:first-child{display:flex!important;align-items:center!important;gap:8px!important;color:#e8f2ff!important;font-family:inherit!important;font-size:clamp(11px,1.3vw,14px)!important;font-weight:900!important;letter-spacing:.8px!important}
+.user-list-card .listtitle>span:first-child:before{content:'👥';font-size:19px;filter:drop-shadow(0 0 7px rgba(38,166,255,.35))}
+.target-list-card .listtitle>span:first-child:before{content:'🎯';font-size:19px;filter:drop-shadow(0 0 7px rgba(168,85,247,.4))}
+.list-count{display:inline-flex!important;align-items:center!important;justify-content:center!important;min-width:34px!important;height:27px!important;padding:0 9px!important;border-radius:9px!important;background:linear-gradient(135deg,#1268b9,#17468c)!important;border:1px solid rgba(92,178,255,.38)!important;color:#eaf7ff!important;font-size:12px!important;font-weight:900!important;line-height:1!important}
+.target-count{background:linear-gradient(135deg,#7626c9,#4c168d)!important;border-color:rgba(204,145,255,.4)!important}
+.target-head-actions{display:flex!important;align-items:center!important;gap:7px!important}
+.illustration-lists #clearTarget{width:29px!important;min-width:29px!important;height:27px!important;min-height:27px!important;padding:0!important;border-radius:8px!important;font-size:13px!important;background:rgba(244,63,94,.14)!important;border:1px solid rgba(251,113,133,.32)!important;box-shadow:none!important}
+#userList,#targetList{box-sizing:border-box!important;width:100%!important;height:clamp(190px,31vh,330px)!important;min-height:190px!important;padding:5px!important;border-radius:13px!important;overflow-y:auto!important;scrollbar-width:thin!important;scrollbar-color:rgba(67,151,255,.65) rgba(3,9,24,.6)!important;background:rgba(3,9,23,.72)!important;border:1px solid rgba(80,137,209,.3)!important;box-shadow:inset 0 2px 9px rgba(0,0,0,.22)!important}
+#targetList{border-color:rgba(168,85,247,.34)!important;scrollbar-color:rgba(168,85,247,.7) rgba(15,7,29,.6)!important}
+#userList .user-item,#targetList .target-item{display:flex!important;align-items:center!important;gap:9px!important;min-height:52px!important;margin:3px 0!important;padding:7px 9px!important;border:1px solid rgba(100,146,210,.17)!important;border-radius:11px!important;background:linear-gradient(100deg,rgba(21,57,105,.48),rgba(13,25,48,.66))!important;color:#f1f6ff!important;font-size:12px!important;font-weight:750!important;line-height:1.25!important;overflow-wrap:anywhere!important;transition:background .16s,border-color .16s,transform .16s!important}
+#userList .user-item:hover{background:linear-gradient(100deg,rgba(22,93,164,.6),rgba(13,35,66,.8))!important;border-color:rgba(65,166,255,.48)!important;transform:translateY(-1px)!important}
+#targetList .target-item{border-color:rgba(166,111,231,.2)!important;border-left:3px solid #a855f7!important;background:linear-gradient(100deg,rgba(77,31,124,.43),rgba(24,17,49,.68))!important}
+#targetList .target-item:hover{background:linear-gradient(100deg,rgba(102,42,163,.58),rgba(34,21,63,.82))!important;border-color:rgba(190,132,255,.48)!important;transform:translateY(-1px)!important}
+#userList .user-check{flex:0 0 19px!important;width:19px!important;height:19px!important;min-height:19px!important;margin:0!important;accent-color:#28aaff!important}
+#userList .user-item>span{min-width:0!important;display:flex!important;align-items:center!important;gap:8px!important;overflow-wrap:anywhere!important}
+#userList .user-item>span:before,#targetList .target-item:before{content:'🤖';display:inline-flex;align-items:center;justify-content:center;flex:0 0 34px;width:34px;height:34px;border-radius:50%;background:linear-gradient(145deg,#087ed0,#153e8c)!important;box-shadow:0 0 12px rgba(34,150,255,.2);font-size:19px}
+#targetList .target-item:before{background:linear-gradient(145deg,#6525ad,#253c91)!important;box-shadow:0 0 12px rgba(168,85,247,.22)}
+#userList .empty,#targetList .empty{padding:12px 9px!important;color:#9aaccb!important;text-align:center!important;font-size:11px!important}
+#userList::-webkit-scrollbar,#targetList::-webkit-scrollbar{width:7px}
+#userList::-webkit-scrollbar-thumb{background:linear-gradient(#2588ed,#174b9d);border-radius:99px}
+#targetList::-webkit-scrollbar-thumb{background:linear-gradient(#b45cff,#6825b5);border-radius:99px}
+.room-controls-bottom{margin-top:12px!important}
+@media(max-width:600px){.room-users-card{padding:9px!important}.illustration-lists{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:7px!important}.illustration-lists>.list-card{padding:7px!important;border-radius:13px!important}.illustration-lists .listtitle{min-height:32px!important;margin-bottom:6px!important}.illustration-lists .listtitle>span:first-child{font-size:10px!important;gap:5px!important}.user-list-card .listtitle>span:first-child:before,.target-list-card .listtitle>span:first-child:before{font-size:15px}#userList,#targetList{height:clamp(185px,32vh,270px)!important;min-height:185px!important;padding:4px!important}#userList .user-item,#targetList .target-item{min-height:43px!important;gap:5px!important;padding:6px!important;font-size:10px!important}#userList .user-item>span:before,#targetList .target-item:before{flex-basis:25px;width:25px;height:25px;font-size:14px}.list-count{min-width:26px!important;height:23px!important;padding:0 6px!important;font-size:10px!important}.illustration-lists #clearTarget{width:25px!important;min-width:25px!important;height:23px!important;min-height:23px!important;font-size:11px!important}}
+@media(max-width:350px){.illustration-lists{gap:5px!important}.illustration-lists>.list-card{padding:5px!important}#userList .user-item,#targetList .target-item{font-size:9px!important;gap:4px!important;padding:5px 4px!important}#userList .user-item>span:before,#targetList .target-item:before{flex-basis:21px;width:21px;height:21px;font-size:12px}}
 
 </style>
 </body>
