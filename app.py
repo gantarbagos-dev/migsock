@@ -59,6 +59,8 @@ ACTIVE_UPSTREAM = {}
 # Per-login-session upstream registry. A browser session owns only its own WS1-WS10.
 SESSION_UPSTREAM = {}
 WS_SESSION = {}
+# Socket role is explicit: only troop sockets participate in KickAll.
+WS_ROLE = {}
 KICK_RATE_LOCKS = {}
 KICK_RATE_STATE = {}
 SESSION_BROWSERS = {}
@@ -96,6 +98,8 @@ ACTIVE_KICK_TASK_HANDLES = {}
 AUTO_KICK_CONFIGS = {}
 AUTO_KICK_TIMERS = {}
 AUTO_KICK_LAST_EVENT = {}
+# Latest participant snapshots are captured directly from upstream room responses.
+ROOM_PARTICIPANTS = {}
 
 def _norm_room_key(room):
     return str(room or "").strip().casefold()
@@ -114,6 +118,206 @@ def _normalize_target_usernames(values):
             seen.add(key)
             normalized.append(target)
     return normalized
+
+
+def _generate_auto_targets(users, blocked_users=None, kicked_users=None, existing_targets=None, limit=10):
+    """Server-side equivalent of the former browser Auto Target v2 selector."""
+    blocked = {str(x).strip().casefold() for x in (blocked_users or []) if str(x).strip()}
+    kicked = {str(x).strip().casefold() for x in (kicked_users or []) if str(x).strip()}
+    existing = {str(x).strip().casefold() for x in (existing_targets or []) if str(x).strip()}
+    unique = {}
+    for raw in users or []:
+        value = str(raw or "").strip()
+        key = value.casefold()
+        if value and key not in blocked and key not in kicked and key not in existing:
+            unique.setdefault(key, value)
+    values = list(unique.values())
+    candidates = []
+
+    def best_window(items, number=False, require_ten=False):
+        if len(items) < 2:
+            return None, None
+        best, best_score = None, None
+        windows = [items[i:i+10] for i in range(len(items)-9)] if len(items) >= 10 else ([items] if not require_ten else [])
+        for window in windows:
+            if len(window) < 2:
+                continue
+            codes = [x['n'] if number else x['code'] for x in window]
+            run = max_run = 1
+            for i in range(1, len(codes)):
+                run = run + 1 if codes[i] == codes[i-1] + 1 else 1
+                max_run = max(max_run, run)
+            span, start = codes[-1] - codes[0], codes[0]
+            score = (len(window), max_run, -span, start)
+            if number:
+                widths = {}
+                for x in window:
+                    widths[x['width']] = widths.get(x['width'], 0) + 1
+                dominant = max(widths.values(), default=0)
+                score = (len(window), max_run, -span, dominant, -start)
+            else:
+                score = (len(window), max_run, -span, -start)
+            if best_score is None or score > best_score:
+                best, best_score = window, score
+        return best, best_score
+
+    # Numeric sequence families: vary one numeric segment while all surrounding
+    # text and the segment position/count remain identical.
+    numeric_groups = {}
+    for value in values:
+        import re
+        matches = list(re.finditer(r'\d+', value))
+        for idx, match in enumerate(matches):
+            prefix, suffix = value[:match.start()], value[match.end():]
+            key = (prefix.casefold(), suffix.casefold(), idx, len(matches))
+            try:
+                n = int(match.group(0))
+            except ValueError:
+                continue
+            if n > 9007199254740991:
+                continue
+            numeric_groups.setdefault(key, []).append({
+                'u': value, 'n': n, 'width': len(match.group(0))
+            })
+    for key, raw_items in numeric_groups.items():
+        by_number = {}
+        for item in raw_items:
+            old = by_number.get(item['n'])
+            if old is None or item['width'] > old['width'] or (item['width'] == old['width'] and item['u'] < old['u']):
+                by_number[item['n']] = item
+        items = sorted(by_number.values(), key=lambda x: (x['n'], x['u']))
+        if len(items) < 2:
+            continue
+        window, score = best_window(items, number=True)
+        if not window:
+            continue
+        contiguous, span, start, dominant = score[1], -score[2], -score[4], score[3]
+        selected = window[:10]
+        value_score = 400000 + (100000 if len(selected) == 10 else 0) + len(selected)*1000 + contiguous*150 + dominant*10 - min(span,999999) - min(start,999999)/1000000
+        candidates.append((value_score, selected))
+
+    # Single-letter tokens bounded by non-letters (e.g. team-a-x).
+    import re
+    extended_groups = {}
+    for value in values:
+        for match in re.finditer(r'(?:^|[^A-Za-z])([A-Za-z])(?=$|[^A-Za-z])', value):
+            char_index = match.start() + len(match.group(0)) - 1
+            key = (value[:char_index].casefold(), value[char_index+1:].casefold())
+            extended_groups.setdefault(key, []).append({'u': value, 'code': ord(value[char_index].lower())})
+    for raw_items in extended_groups.values():
+        by_code = {}
+        for item in raw_items:
+            by_code.setdefault(item['code'], item)
+        items = sorted(by_code.values(), key=lambda x: (x['code'], x['u']))
+        window, score = best_window(items)
+        if not window:
+            continue
+        contiguous, span, start = score[1], -score[2], -score[3]
+        selected = window[:10]
+        value_score = 320000 + (100000 if len(selected) == 10 else 0) + len(selected)*1000 + contiguous*100 - span - start/100000
+        candidates.append((value_score, selected))
+
+    # Alphabetic suffix families (e.g. namea ... namej).
+    alpha_groups = {}
+    for value in values:
+        if re.search(r'\d', value):
+            continue
+        match = re.match(r'^(.*?)([A-Za-z])$', value)
+        if match:
+            alpha_groups.setdefault(match.group(1).casefold(), []).append({'u': value, 'code': ord(match.group(2).lower())})
+    for raw_items in alpha_groups.values():
+        by_code = {}
+        for item in raw_items:
+            by_code.setdefault(item['code'], item)
+        items = sorted(by_code.values(), key=lambda x: (x['code'], x['u']))
+        if len(items) >= 10:
+            window, score = best_window(items, require_ten=True)
+        else:
+            # Match the former browser behavior: choose the longest contiguous run.
+            window = None
+            for i in range(len(items)):
+                run = [items[i]]
+                for item in items[i+1:]:
+                    if item['code'] == run[-1]['code'] + 1:
+                        run.append(item)
+                    else:
+                        break
+                if len(run) >= 2 and (window is None or len(run) > len(window) or (len(run) == len(window) and run[0]['code'] < window[0]['code'])):
+                    window = run
+            score = None
+            if window:
+                score = (len(window), len(window), -(window[-1]['code']-window[0]['code']), -window[0]['code'])
+        if not window:
+            continue
+        contiguous, span, start = score[1], -score[2], -score[3]
+        selected = window[:10]
+        value_score = 300000 + (100000 if len(selected) == 10 else 0) + len(selected)*1000 + contiguous*100 - span - start/100000
+        candidates.append((value_score, selected))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    capacity = max(0, min(10, int(limit)) - len(existing))
+    return [item['u'] for item in candidates[0][1][:capacity]]
+
+
+def _extract_room_participants(payload):
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+    result = payload.get('result') if isinstance(payload.get('result'), dict) else {}
+    candidates = (
+        payload.get('participants'), data.get('participants'), payload.get('users'),
+        data.get('users'), data.get('members'), data.get('list'), data.get('results'),
+        result.get('participants'), result.get('users'),
+    )
+    values = next((value for value in candidates if value is not None), [])
+    if isinstance(values, dict):
+        values = list(values.values())
+    if not isinstance(values, list):
+        return []
+    users = []
+    for item in values:
+        if isinstance(item, str):
+            value = item
+        elif isinstance(item, dict):
+            value = next((item.get(k) for k in ('username', 'user', 'name', 'nickname', 'id') if item.get(k)), '')
+        else:
+            value = ''
+        value = str(value or '').strip()
+        if value:
+            users.append(value[:128])
+    return users[:5000]
+
+
+@require_auth
+async def generate_targets(request):
+    """Generate candidates from participant snapshots captured by backend upstream relays."""
+    try:
+        data = await request.json(loads=json_loads)
+        room = str(data.get('room', '')).strip()
+        blocked = data.get('ownWebSockets', [])
+        kicked = data.get('kicked', [])
+        existing = data.get('existingTargets', [])
+        if not room or not all(isinstance(v, list) for v in (blocked, kicked, existing)):
+            raise ValueError('Parameter room/target tidak valid')
+        if len(blocked) > 20 or len(kicked) > 5000 or len(existing) > 10:
+            raise ValueError('Jumlah data target melebihi batas')
+        session_id = request.get('session_id')
+        room_key = _norm_room_key(room)
+        snapshots = ROOM_PARTICIPANTS.get((session_id, room_key), {})
+        users = []
+        seen = set()
+        for snapshot in snapshots.values():
+            for username in snapshot.get('users', []):
+                key = str(username).strip().casefold()
+                if key and key not in seen:
+                    seen.add(key)
+                    users.append(username)
+        targets = await asyncio.to_thread(_generate_auto_targets, users, blocked, kicked, existing, 10)
+        return json_response({'ok': True, 'targets': targets, 'count': len(targets), 'participants': len(users), 'snapshots': len(snapshots), 'generatedBy': 'backend'})
+    except Exception as exc:
+        return json_response({'ok': False, 'error': str(exc)}, status=400)
 
 def _event_payload_dict(payload):
     if not isinstance(payload, dict):
@@ -271,7 +475,7 @@ async def load_config_file(request):
         return json_response({"ok": False, "error": str(e)}, status=400)
 
 
-def register_socket(session_id, username, ws):
+def register_socket(session_id, username, ws, role="troop"):
     if not session_id or not username:
         return
     key = username.strip().casefold()
@@ -283,6 +487,7 @@ def register_socket(session_id, username, ws):
         asyncio.create_task(_close_upstream_resource(current))
     SESSION_UPSTREAM.setdefault(session_id, {})[key] = ws
     WS_SESSION[id(ws)] = session_id
+    WS_ROLE[id(ws)] = "bank" if str(role).lower() == "bank" else "troop"
     ACTIVE_UPSTREAM[(session_id, key)] = ws
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_STATE.setdefault(id(ws), {"timestamps": deque()})
@@ -332,6 +537,7 @@ def unregister_socket(session_id, username, ws):
         if current is ws:
             ACTIVE_UPSTREAM.pop(key, None)
     WS_SESSION.pop(id(ws), None)
+    WS_ROLE.pop(id(ws), None)
     KICK_RATE_LOCKS.pop(id(ws), None)
     KICK_RATE_STATE.pop(id(ws), None)
 
@@ -340,7 +546,7 @@ def session_sockets(session_id):
     result = []
     seen = set()
     for username, ws in list(sockets.items()):
-        if ws is None or getattr(ws, "closed", False):
+        if ws is None or getattr(ws, "closed", False) or WS_ROLE.get(id(ws), "troop") != "troop":
             continue
         if id(ws) in seen:
             continue
@@ -354,7 +560,7 @@ def all_active_ws_usernames(exclude_session=None):
         if exclude_session is not None and sid == exclude_session:
             continue
         for name, ws in list(sockets.items()):
-            if ws is not None and not getattr(ws, "closed", False):
+            if ws is not None and not getattr(ws, "closed", False) and WS_ROLE.get(id(ws), "troop") == "troop":
                 names.add(str(name).strip().casefold())
     return names
 
@@ -670,15 +876,12 @@ async def configure_auto_kick(request):
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery") or 1)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery") or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
-        kick_method = str(data.get("kickMethod", "5-2"))
-        if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
-            kick_method = "5-2"
         if not room:
             raise ValueError("Room wajib diisi")
         if len(targets) > 500:
             raise ValueError("Maksimal 500 target")
         session_id = request.get("session_id")
-        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target, "kickMethod":kick_method}
+        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target}
         return json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms})
     except Exception as exc:
         return json_response({"ok":False,"error":str(exc)}, status=400)
@@ -786,9 +989,6 @@ def _launch_kick_job(session_id, data):
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery")) or 1)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery")) or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
-        kick_method = str(data.get("kickMethod", "5-2"))
-        if kick_method not in {"5-2", "4-2", "3-2", "2-2"}:
-            kick_method = "5-2"
     except Exception:
         return {"ok":False,"error":"Parameter kick tidak valid"}, 400
     if not room or not targets:
@@ -808,7 +1008,7 @@ def _launch_kick_job(session_id, data):
         return {"ok":False,"error":"Masih ada job aktif untuk room ini","active":True,"jobIds":active_ids}, 409
     job_id = uuid.uuid4().hex[:12]
     ACTIVE_KICK_TASKS[job_key] = [job_id]
-    task = asyncio.create_task(_run_kick_job(job_id, session_id, room, list(targets), socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method))
+    task = asyncio.create_task(_run_kick_job(job_id, session_id, room, list(targets), socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
         current = ACTIVE_KICK_TASKS.get(job_key, [])
@@ -826,7 +1026,7 @@ def _launch_kick_job(session_id, data):
             if not ACTIVE_KICK_JOBS[job_key]:
                 ACTIVE_KICK_JOBS.pop(job_key, None)
     task.add_done_callback(_job_done)
-    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"kickMethod":kick_method,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
+    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
 
 @require_auth
 async def kick_loop(request):
@@ -837,14 +1037,14 @@ async def kick_loop(request):
     body, status = _launch_kick_job(request.get("session_id"), data)
     return json_response(body, status=status)
 
-async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method):
+async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target):
     # Keep worker failures observable by the frontend instead of leaving a
     # permanent RUNNING state. Cancellation is intentionally silent because
     # LOGOUT/RESET explicitly cancels the worker.
     try:
         return await _run_kick_job_impl(
             job_id, session_id, room, targets, socket_entries, loops,
-            kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method
+            kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target
         )
     except asyncio.CancelledError:
         raise
@@ -852,7 +1052,7 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         print(f"[KICK JOB ERROR] job={job_id} session={session_id[:8]} room={room!r}: {exc!r}", flush=True)
         raise
 
-async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, kick_method):
+async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target):
     """Run Kick All with direct parallel fan-out and no per-socket queue.
 
     Each target is dispatched directly to every active upstream socket with
@@ -1047,7 +1247,6 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             "stopped": bool(replacement_state.get("stopped")),
             "loopsCompleted": loop_no,
             "mode": "parallel-fanout-direct",
-            "kickMethod": kick_method,
         })
         replacement_state["stopped"] = True
         job_key = (session_id, room_key)
@@ -1067,6 +1266,9 @@ async def reset_troop_session(request):
             if task and not task.done(): task.cancel()
             AUTO_KICK_TIMERS.pop(timer_key, None)
     AUTO_KICK_CONFIGS.pop(session_id, None)
+    for participant_key in list(ROOM_PARTICIPANTS.keys()):
+        if participant_key[0] == session_id:
+            ROOM_PARTICIPANTS.pop(participant_key, None)
     for event_key in list(AUTO_KICK_LAST_EVENT.keys()):
         if event_key[0] == session_id: AUTO_KICK_LAST_EVENT.pop(event_key, None)
     cancelled = 0
@@ -1107,7 +1309,7 @@ async def reset_troop_session(request):
                 ACTIVE_KICK_JOBS.pop(job_key, None)
     # Close every upstream belonging to this troop session so the next LOGIN ALL
     # always starts with fresh developer sessions.
-    sockets = list((SESSION_UPSTREAM.get(session_id) or {}).values())
+    sockets = [ws for ws in list((SESSION_UPSTREAM.get(session_id) or {}).values()) if WS_ROLE.get(id(ws), "troop") == "troop"]
     for ws in sockets:
         try:
             if id(ws) in DETACHED_UPSTREAM:
@@ -1116,7 +1318,14 @@ async def reset_troop_session(request):
                 await ws.close(code=1000, message=b"troop reset")
         except Exception:
             pass
-    SESSION_UPSTREAM.pop(session_id, None)
+    # Remove only troop entries; never discard the BANK registry during troop reset.
+    remaining = SESSION_UPSTREAM.get(session_id)
+    if remaining is not None:
+        for name, ws in list(remaining.items()):
+            if WS_ROLE.get(id(ws), "troop") == "troop":
+                remaining.pop(name, None)
+        if not remaining:
+            SESSION_UPSTREAM.pop(session_id, None)
     return json_response({"ok": True, "cancelledJobs": cancelled, "closedSockets": len(sockets), "session": "troop-reset"})
 
 
@@ -1484,6 +1693,9 @@ async def proxy(request):
     try:
         session = ClientSession()
         upstream_username = None
+        upstream_role = "troop"
+        active_room = None
+        explicit_logout = False
         # No receive timeout: the API is a long-lived WebSocket and has its own JSON ping rule.
         ws_timeout = ClientWSTimeout(ws_close=10, ws_receive=None)
         last_error = None
@@ -1521,6 +1733,16 @@ async def proxy(request):
                     try:
                         payload = json_loads(msg.data)
                         await handle_auto_kick_event(payload, session_id)
+                        message_type = str(payload.get("type", "")) if isinstance(payload, dict) else ""
+                        if message_type in {"room.participants.result", "room.participants"} and active_room and upstream_role == "troop":
+                            payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                            room_value = str(payload.get("room", payload_data.get("room", active_room))).strip() or active_room
+                            participant_users = _extract_room_participants(payload)
+                            room_key = _norm_room_key(room_value)
+                            snapshot_key = (session_id, room_key)
+                            snapshots = ROOM_PARTICIPANTS.setdefault(snapshot_key, {})
+                            snapshots[id(upstream)] = {"username": upstream_username, "users": participant_users, "updated_at": time.time()}
+
                     except Exception:
                         pass
 
@@ -1576,9 +1798,21 @@ async def proxy(request):
                     break
                 try:
                     payload = json_loads(msg.data)
-                    if payload.get("type") == "developer.login":
+                    control_type = str(payload.get("type", "")) if isinstance(payload, dict) else ""
+                    if control_type == "proxy.role":
+                        upstream_role = "bank" if str(payload.get("role", "")).lower() == "bank" else "troop"
+                        continue
+                    if control_type == "room.participants" and upstream_role == "troop":
+                        active_room = str(payload.get("room", "")).strip() or None
+                        if active_room:
+                            room_snapshots = ROOM_PARTICIPANTS.setdefault((session_id, _norm_room_key(active_room)), {})
+                            room_snapshots.pop(id(upstream), None)
+                    if control_type == "proxy.logout":
+                        explicit_logout = True
+                        break
+                    if control_type == "developer.login":
                         upstream_username = str(payload.get("username", "")).strip() or None
-                        register_socket(session_id, upstream_username, upstream)
+                        register_socket(session_id, upstream_username, upstream, upstream_role)
                 except Exception:
                     pass
                 await upstream.send_str(msg.data)
@@ -1607,11 +1841,16 @@ async def proxy(request):
         registered = False
         if upstream is not None and session_id and upstream_username:
             registered = SESSION_UPSTREAM.get(session_id, {}).get(upstream_username.strip().casefold()) is upstream
-        if registered and browser.closed and not upstream.closed:
+        if registered and browser.closed and not explicit_logout and not upstream.closed:
             # Browser disconnected, but the account socket stays owned by the backend.
             DETACHED_UPSTREAM[id(upstream)] = {"session_id":session_id,"username":upstream_username,"ws":upstream,"session":session,"relay_task":relay_task}
             print(f"[UPSTREAM DETACHED] session={session_id[:8]} username={upstream_username!r}; backend continues without browser", flush=True)
         else:
+            if upstream is not None:
+                for participant_key, snapshots in list(ROOM_PARTICIPANTS.items()):
+                    snapshots.pop(id(upstream), None)
+                    if not snapshots:
+                        ROOM_PARTICIPANTS.pop(participant_key, None)
             if relay_task is not None:
                 relay_task.cancel()
                 await asyncio.gather(relay_task, return_exceptions=True)
@@ -1681,6 +1920,7 @@ app.router.add_delete("/api/admin/users/{username}", admin_delete_user)
 app.router.add_get("/health", health)
 app.router.add_get("/ws", proxy)
 app.router.add_post("/api/kick-loop", kick_loop)
+app.router.add_post("/api/target-generate", generate_targets)
 app.router.add_post("/api/kick-auto-config", configure_auto_kick)
 app.router.add_post("/api/kick-auto-reset", reset_auto_kick_countdown)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
