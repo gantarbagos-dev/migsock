@@ -664,7 +664,8 @@ tabFlat.onclick=()=>switchTab("flat");
 const N=10;
 const clients=Array.from({length:N},()=>({ws:null,loggedIn:false,inRoom:false,pingTimer:null,intentionalClose:false,balance:null,generation:0}));
 const rows=document.getElementById("rows"),roomEl=document.getElementById("room"),userList=document.getElementById("userList"),targetList=document.getElementById("targetList"),userCount=document.getElementById("userCount"),targetCount=document.getElementById("targetCount"),saveLoadEl=document.getElementById("saveLoad");
-let confirmedKickedTargets=new Set();let kickRunning=false;let troopResetGeneration=0;let roomBatchGeneration=0;
+let confirmedKickedTargets=new Set();let kickRunning=false;let troopResetGeneration=0;let roomBatchGeneration=0;let enemyProfileLookupKey="";let enemyProfileLookupSeq=0;
+let adaptiveKickRun=null;
 const SAVE_PREFIX="migsock_config_";
 let participantUsers=[];
 let participantBySocket=Array.from({length:N},()=>[]);
@@ -880,6 +881,7 @@ function dispatchSocketEvent(m,i){
   if(m.type==="kick.job.finished"){
     kickRunning=false;
     setKickButtonState(false);
+    void finalizeAdaptiveKickOutcome(m);
     return;
   }
   if(isConfirmedKickEvent(m)){removeConfirmedKickedTarget(kickEventData(m).target);return}
@@ -1147,6 +1149,7 @@ function removeConfirmedKickedTarget(username){
   if(!username)return false;
   const key=stateKey(username);
   if(!key)return false;
+  if(adaptiveKickRun?.active && adaptiveKickRun.wsNames.has(key)) adaptiveKickRun.kickedWs.add(key);
   confirmedKickedTargets.add(key);
   appState.kicked.add(key);
   appState.participants.delete(key);
@@ -1192,7 +1195,61 @@ function addTarget(username){
   appState.targets.set(key,value);
   targetRowsByKey.set(key,e);
   updateTargetCount();
+  if(appState.targets.size===10) void lookupEnemyCounterProfile();
   return true;
+}
+async function lookupEnemyCounterProfile(){
+  const targets=getTargetNames();
+  if(targets.length!==10)return;
+  const lookupKey=targets.map(x=>String(x).trim().toLowerCase()).sort().join("\n");
+  if(lookupKey===enemyProfileLookupKey)return;
+  enemyProfileLookupKey=lookupKey;
+  const seq=++enemyProfileLookupSeq;
+  try{
+    const response=await fetch('/api/enemy-counter/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targets}),cache:'no-store'});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok||result.ok!==true)throw new Error(result.error||`HTTP ${response.status}`);
+    if(seq!==enemyProfileLookupSeq||getTargetNames().length!==10)return;
+    const currentKey=getTargetNames().map(x=>String(x).trim().toLowerCase()).sort().join("\n");
+    if(currentKey!==lookupKey)return;
+    if(result.found&&result.settings){
+      applyKickSet(result.settings);
+      log(0,`ENEMY INTELLIGENCE: 10 username dikenali. Counter terbaik otomatis dimuat (pertemuan ${result.encounters||1}; hasil ${result.learning?.wins||0} berhasil/${result.learning?.losses||0} gagal).`);
+    }else{
+      log(0,'ENEMY INTELLIGENCE: kombinasi 10 username baru. Set akan dipelajari saat KICK ALL dijalankan.');
+    }
+  }catch(error){log(0,'ENEMY INTELLIGENCE ERROR: '+(error?.message||'gagal memuat profil'));}
+}
+async function saveEnemyCounterProfile(targets,settings){
+  if(!Array.isArray(targets)||targets.length!==10)return;
+  const response=await fetch('/api/enemy-counter/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targets,settings}),cache:'no-store'});
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok||result.ok!==true)throw new Error(result.error||`HTTP ${response.status}`);
+}
+async function recordEnemyCounterOutcome(outcome,run){
+  const targets=run?.targets||[];
+  const settings=run?.settings||{};
+  if(targets.length!==10){log(0,'ADAPTIVE COUNTER: pembelajaran hanya tersedia untuk tepat 10 username TARGET.');return;}
+  try{
+    const response=await fetch('/api/enemy-counter/outcome',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targets,settings,outcome}),cache:'no-store'});
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok||result.ok!==true)throw new Error(result.error||`HTTP ${response.status}`);
+    log(0,`ADAPTIVE COUNTER OTOMATIS: ${outcome==='win'?'BERHASIL':'GAGAL'} tersimpan (${run.kickedWs.size}/${run.targetCount} WS terkena kick; ${result.wins} berhasil/${result.losses} gagal).`);
+  }catch(error){log(0,'ADAPTIVE COUNTER ERROR: '+(error?.message||'gagal menyimpan hasil otomatis'));}
+}
+async function finalizeAdaptiveKickOutcome(event={}){
+  const run=adaptiveKickRun;
+  if(!run?.active)return;
+  run.active=false;
+  const kickedCount=run.kickedWs.size;
+  if(kickedCount<run.targetCount){
+    await recordEnemyCounterOutcome('win',run);
+  }else if(kickedCount>run.targetCount){
+    await recordEnemyCounterOutcome('loss',run);
+  }else{
+    log(0,`ADAPTIVE COUNTER OTOMATIS: hasil NETRAL (${kickedCount}/${run.targetCount}); statistik tidak diubah.`);
+  }
+  adaptiveKickRun=null;
 }
 function moveUserToTarget(username,row,checkbox){
   const added=addTarget(username);
@@ -1239,6 +1296,7 @@ async function requestAutoTargets(users,cycle){
 }
 
 function clearTargets(){
+  enemyProfileLookupKey="";enemyProfileLookupSeq++;
   if(autoTargetTimer){clearTimeout(autoTargetTimer);autoTargetTimer=null}
   autoTargetCycle++;
   const restored=[...new Set(participantUsers)].filter(u=>!confirmedKickedTargets.has(String(u).toLowerCase()));
@@ -1504,9 +1562,16 @@ async function kickAll(){
   const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||1));
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||1));
   const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
+  const enemyCounterSet=collectKickSet();
+  if(targets.length===10){
+    try{await saveEnemyCounterProfile(targets,enemyCounterSet);log(0,'ENEMY INTELLIGENCE: profil 10 TARGET dan counter set berhasil disimpan ke database.');}
+    catch(error){log(0,'ENEMY INTELLIGENCE: profil tidak tersimpan: '+(error?.message||'database error'));}
+  }
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/500ms/WS`);
   await syncBackendAutoConfig(true);
   const resetGeneration=troopResetGeneration;
+  const wsNames=new Set(Array.from({length:10},(_,i)=>stateKey(cred(i).username)).filter(Boolean));
+  adaptiveKickRun={active:true,targets:[...targets],targetCount:targets.length,settings:enemyCounterSet,wsNames,kickedWs:new Set()};
   // Set the UI state before awaiting the HTTP response. A very short job can
   // emit kick.job.finished before fetch() resolves; setting running only after
   // the response would then leave the button stuck on STOP KICK.
@@ -1525,6 +1590,8 @@ async function kickAll(){
     if(resetGeneration!==troopResetGeneration)return;
     kickRunning=false;
     setKickButtonState(false);
+    if(adaptiveKickRun)adaptiveKickRun.active=false;
+    adaptiveKickRun=null;
     log(0,'KICKALL ERROR: '+e.message);
   }
 }
