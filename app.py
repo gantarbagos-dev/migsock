@@ -5,6 +5,7 @@ from collections import deque
 import uuid
 import re
 import time
+import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -46,7 +47,7 @@ from auth import (
     SESSION_COOKIE, create_session, authenticate, destroy_session, get_session,
     init_auth_db, list_users, create_user, set_enabled, delete_user, change_password,
     get_session_ttl, set_session_ttl, SESSION_TTL_MIN, SESSION_TTL_MAX,
-    register_or_check_device, list_devices, set_device_status, delete_device,
+    register_or_check_device, list_devices, set_device_status, delete_device, DB_PATH,
 )
 
 ROOT = Path(__file__).resolve().parent / "public"
@@ -1926,6 +1927,146 @@ app.router.add_post("/api/kick-auto-reset", reset_auto_kick_countdown)
 app.router.add_post("/api/kick-stop", stop_kick_loop)
 app.router.add_post("/api/troop/reset", reset_troop_session)
 app.router.add_static("/static/", ROOT)
+
+def _enemy_profile_key(targets):
+    """Stable fingerprint for an exact set of target usernames (order-independent)."""
+    normalized = sorted({str(x).strip().casefold() for x in targets if str(x).strip()})
+    if len(normalized) != 10:
+        raise ValueError("Profil musuh membutuhkan tepat 10 username TARGET")
+    raw = "\n".join(normalized).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest(), normalized
+
+
+def _ensure_enemy_profile_table():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS enemy_counter_profiles (
+            owner TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            targets_json TEXT NOT NULL,
+            settings_json TEXT NOT NULL,
+            encounters INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY(owner, fingerprint)
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_enemy_profiles_owner ON enemy_counter_profiles(owner)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS enemy_counter_trials (
+            owner TEXT NOT NULL, fingerprint TEXT NOT NULL, settings_hash TEXT NOT NULL,
+            settings_json TEXT NOT NULL, wins INTEGER NOT NULL DEFAULT 0,
+            losses INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL,
+            PRIMARY KEY(owner, fingerprint, settings_hash)
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_enemy_trials_owner ON enemy_counter_trials(owner,fingerprint)")
+
+
+def _save_enemy_counter_profile(owner, targets, settings):
+    fingerprint, normalized = _enemy_profile_key(targets)
+    allowed = {"timerKickall", "delaySocket", "socketApplyEvery", "delayTarget", "targetApplyEvery", "loopKick", "kickLimitPerWs"}
+    clean = {key: settings[key] for key in allowed if key in settings}
+    now = time.time()
+    settings_json = json_dumps({k: clean[k] for k in sorted(clean)})
+    settings_hash = hashlib.sha256(settings_json.encode("utf-8")).hexdigest()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""INSERT INTO enemy_counter_trials
+            (owner,fingerprint,settings_hash,settings_json,updated_at)
+            VALUES(?,?,?,?,?) ON CONFLICT(owner,fingerprint,settings_hash) DO UPDATE SET
+            settings_json=excluded.settings_json,updated_at=excluded.updated_at""",
+            (owner, fingerprint, settings_hash, settings_json, now))
+        conn.execute("""INSERT INTO enemy_counter_profiles
+            (owner,fingerprint,targets_json,settings_json,encounters,created_at,updated_at)
+            VALUES(?,?,?,?,1,?,?)
+            ON CONFLICT(owner,fingerprint) DO UPDATE SET
+              targets_json=excluded.targets_json,
+              settings_json=excluded.settings_json,
+              encounters=enemy_counter_profiles.encounters+1,
+              updated_at=excluded.updated_at""",
+            (owner, fingerprint, json_dumps(normalized), json_dumps(clean), now, now))
+    return fingerprint
+
+
+@require_auth
+async def enemy_counter_profile_get(request):
+    try:
+        data = await request.json(loads=json_loads)
+        targets = data.get("targets", [])
+        fingerprint, _ = _enemy_profile_key(targets)
+        session = await _current_user(request)
+        owner = str((session or {}).get("username", "")).casefold()
+        if not owner:
+            return json_response({"ok":False,"error":"Sesi pengguna tidak valid"}, status=401)
+        def read_profile():
+            with sqlite3.connect(DB_PATH) as conn:
+                row = conn.execute("SELECT settings_json,encounters,updated_at FROM enemy_counter_profiles WHERE owner=? AND fingerprint=?", (owner, fingerprint)).fetchone()
+                best = conn.execute("""SELECT settings_json,wins,losses FROM enemy_counter_trials
+                    WHERE owner=? AND fingerprint=? AND (wins+losses)>0
+                    ORDER BY CAST(wins AS REAL)/(wins+losses) DESC, wins DESC, (wins+losses) DESC, updated_at DESC LIMIT 1""", (owner, fingerprint)).fetchone()
+                return row, best
+        row = await asyncio.to_thread(read_profile)
+        row, best = row
+        if not row:
+            return json_response({"ok":True,"found":False})
+        selected = best[0] if best else row[0]
+        stats = {"wins":best[1],"losses":best[2]} if best else {"wins":0,"losses":0}
+        return json_response({"ok":True,"found":True,"settings":json_loads(selected),"encounters":row[1],"updatedAt":row[2],"learning":stats,"learned":bool(best)})
+    except Exception as exc:
+        return json_response({"ok":False,"error":str(exc)}, status=400)
+
+
+@require_auth
+async def enemy_counter_profile_save(request):
+    try:
+        data = await request.json(loads=json_loads)
+        targets = data.get("targets", [])
+        settings = data.get("settings", {})
+        if not isinstance(settings, dict):
+            raise ValueError("Pengaturan counter tidak valid")
+        session = await _current_user(request)
+        owner = str((session or {}).get("username", "")).casefold()
+        if not owner:
+            return json_response({"ok":False,"error":"Sesi pengguna tidak valid"}, status=401)
+        fingerprint = await asyncio.to_thread(_save_enemy_counter_profile, owner, targets, settings)
+        return json_response({"ok":True,"saved":True,"fingerprint":fingerprint})
+    except Exception as exc:
+        return json_response({"ok":False,"error":str(exc)}, status=400)
+
+
+
+@require_auth
+async def enemy_counter_outcome(request):
+    try:
+        data = await request.json(loads=json_loads)
+        fingerprint, _ = _enemy_profile_key(data.get("targets", []))
+        outcome = str(data.get("outcome", "")).lower()
+        if outcome not in {"win", "loss"}:
+            raise ValueError("Hasil duel harus win atau loss")
+        settings = data.get("settings", {})
+        if not isinstance(settings, dict):
+            raise ValueError("Pengaturan counter tidak valid")
+        allowed = {"timerKickall", "delaySocket", "socketApplyEvery", "delayTarget", "targetApplyEvery", "loopKick", "kickLimitPerWs"}
+        clean = {k: settings[k] for k in allowed if k in settings}
+        settings_json = json_dumps({k: clean[k] for k in sorted(clean)})
+        settings_hash = hashlib.sha256(settings_json.encode("utf-8")).hexdigest()
+        session = await _current_user(request)
+        owner = str((session or {}).get("username", "")).casefold()
+        if not owner:
+            return json_response({"ok":False,"error":"Sesi pengguna tidak valid"}, status=401)
+        column = "wins" if outcome == "win" else "losses"
+        def record():
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.execute(f"UPDATE enemy_counter_trials SET {column}={column}+1,updated_at=? WHERE owner=? AND fingerprint=? AND settings_hash=?", (time.time(),owner,fingerprint,settings_hash))
+                if cur.rowcount == 0:
+                    raise ValueError("Preset belum tersimpan; jalankan penyimpanan profil terlebih dahulu")
+                return conn.execute("SELECT wins,losses FROM enemy_counter_trials WHERE owner=? AND fingerprint=? AND settings_hash=?", (owner,fingerprint,settings_hash)).fetchone()
+        stats = await asyncio.to_thread(record)
+        return json_response({"ok":True,"recorded":True,"wins":stats[0],"losses":stats[1]})
+    except Exception as exc:
+        return json_response({"ok":False,"error":str(exc)}, status=400)
+
+
+_ensure_enemy_profile_table()
+app.router.add_post("/api/enemy-counter/get", enemy_counter_profile_get)
+app.router.add_post("/api/enemy-counter/save", enemy_counter_profile_save)
+app.router.add_post("/api/enemy-counter/outcome", enemy_counter_outcome)
 
 def configure_event_loop():
     """Use uvloop when installed; otherwise retain asyncio's default policy."""
