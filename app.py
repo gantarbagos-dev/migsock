@@ -261,6 +261,37 @@ def _generate_auto_targets(users, blocked_users=None, kicked_users=None, existin
     return [item['u'] for item in candidates[0][1][:capacity]]
 
 
+_KICK_CONFIRMATION_TYPE_MARKERS = (
+    '"room.participant.kicked"', '"room.member.kicked"',
+    '"room.user.kicked"', '"participant.kicked"',
+    '"member.kicked"', '"user.kicked"',
+)
+_KICK_CONFIRMATION_STATUS_MARKERS = (
+    "has been kicked", "was kicked", "have been kicked", "kicked from the room",
+)
+
+
+def _upstream_frame_inspection_flags(raw, active_room, upstream_role):
+    """Identify upstream text frames needed by backend state without JSON parsing all traffic.
+
+    Frames are still forwarded byte-for-byte as text. The string checks are only
+    a fast pre-filter; matching frames are parsed and validated by the existing
+    structured handlers before affecting backend state.
+    """
+    lowered = raw.casefold()
+    inspect_auto = '"room.kick.state"' in lowered and "a vote to kick" in lowered
+    inspect_participants = (
+        upstream_role == "troop"
+        and bool(active_room)
+        and '"room.participants' in lowered
+    )
+    inspect_confirmation = (
+        any(marker in lowered for marker in _KICK_CONFIRMATION_TYPE_MARKERS)
+        or any(marker in lowered for marker in _KICK_CONFIRMATION_STATUS_MARKERS)
+    )
+    return inspect_auto, inspect_participants, inspect_confirmation
+
+
 def _extract_room_participants(payload):
     if not isinstance(payload, dict):
         return []
@@ -1726,27 +1757,32 @@ async def proxy(request):
         async def upstream_to_browser():
             async for msg in upstream:
                 if msg.type == WSMsgType.TEXT:
-                    # Process the automatic KickAll event before forwarding the
-                    # upstream message, so browser delivery latency cannot delay
-                    # the backend countdown start.
+                    # Most upstream frames are only relayed to the browser. Avoid
+                    # decoding those frames unless their raw text could affect
+                    # backend countdown, participant snapshot, or confirmation state.
                     payload = None
-                    try:
-                        payload = json_loads(msg.data)
-                        await handle_auto_kick_event(payload, session_id)
-                        message_type = str(payload.get("type", "")) if isinstance(payload, dict) else ""
-                        if message_type in {"room.participants.result", "room.participants"} and active_room and upstream_role == "troop":
-                            payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-                            room_value = str(payload.get("room", payload_data.get("room", active_room))).strip() or active_room
-                            participant_users = _extract_room_participants(payload)
-                            room_key = _norm_room_key(room_value)
-                            snapshot_key = (session_id, room_key)
-                            snapshots = ROOM_PARTICIPANTS.setdefault(snapshot_key, {})
-                            snapshots[id(upstream)] = {"username": upstream_username, "users": participant_users, "updated_at": time.time()}
+                    inspect_auto, inspect_participants, inspect_confirmation = _upstream_frame_inspection_flags(
+                        msg.data, active_room, upstream_role
+                    )
+                    if inspect_auto or inspect_participants or inspect_confirmation:
+                        try:
+                            payload = json_loads(msg.data)
+                            if inspect_auto:
+                                # Keep the countdown path ahead of browser delivery.
+                                await handle_auto_kick_event(payload, session_id)
+                            message_type = str(payload.get("type", "")) if isinstance(payload, dict) else ""
+                            if inspect_participants and message_type in {"room.participants.result", "room.participants"}:
+                                payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                                room_value = str(payload.get("room", payload_data.get("room", active_room))).strip() or active_room
+                                participant_users = _extract_room_participants(payload)
+                                room_key = _norm_room_key(room_value)
+                                snapshot_key = (session_id, room_key)
+                                snapshots = ROOM_PARTICIPANTS.setdefault(snapshot_key, {})
+                                snapshots[id(upstream)] = {"username": upstream_username, "users": participant_users, "updated_at": time.time()}
+                        except Exception:
+                            payload = None
 
-                    except Exception:
-                        pass
-
-                    # Forward upstream data unchanged after backend event handling.
+                    # Forward upstream data unchanged; no re-serialization or protocol change.
                     if not browser.closed:
                         try:
                             await browser.send_str(msg.data)
@@ -1754,8 +1790,8 @@ async def proxy(request):
                             # Browser is a control/display client; upstream processing continues server-side.
                             pass
 
-                    # Preserve the existing confirmation behavior.
-                    if payload is not None:
+                    # Confirmation events are processed after forwarding, as before.
+                    if payload is not None and inspect_confirmation:
                         try:
                             confirmed = await mark_confirmed_kick(payload, session_id)
                             if confirmed:
