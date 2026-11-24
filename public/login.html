@@ -49,6 +49,21 @@ button:active{transform:translateY(2px)!important;box-shadow:0 1px 0 #769b20!imp
 .error{background:rgba(255,85,116,.1)!important;border:1px solid rgba(255,85,116,.35)!important;color:#ff91a5!important;border-radius:11px!important}
 @media(max-width:480px){body{padding:13px!important}.card{border-radius:19px!important;padding:25px 21px!important}.brand h1{font-size:26px!important}}
 
+
+/* Center login card in the viewport; keep vertical scrolling on short screens */
+html,body{min-height:100%;min-height:100svh}
+body{
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  box-sizing:border-box!important;
+  padding:max(16px,env(safe-area-inset-top)) 14px max(16px,env(safe-area-inset-bottom))!important;
+}
+.card{margin:auto!important;flex:0 1 460px!important}
+@media(max-height:560px){
+  body{align-items:flex-start!important}
+  .card{margin-top:8px!important;margin-bottom:8px!important}
+}
 </style>
 </head><body>
 <div class="card">
