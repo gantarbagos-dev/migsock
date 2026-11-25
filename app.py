@@ -5,6 +5,7 @@ from collections import deque
 import uuid
 import re
 import time
+import random
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -893,6 +894,19 @@ async def handle_auto_kick_event(payload, session_id):
     }
     print(f"[AUTO COUNTDOWN] started session={session_id[:8]} room={room!r} event_duration={event_duration_ms}ms event_age={event_age_ms}ms remaining={duration_ms}ms trigger={trigger_ms}ms", flush=True)
 
+def _apply_target_order(targets, mode="ascending"):
+    """Return a fresh target list in the requested order; default preserves input order."""
+    ordered = list(targets)
+    mode = str(mode or "ascending").strip().lower()
+    if mode == "descending":
+        ordered.reverse()
+    elif mode == "random":
+        random.shuffle(ordered)
+    elif mode != "ascending":
+        raise ValueError("Target Order tidak valid")
+    return ordered
+
+
 @require_auth
 async def configure_auto_kick(request):
     try:
@@ -907,12 +921,14 @@ async def configure_auto_kick(request):
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery") or 1)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery") or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
+        target_order = str(data.get("targetOrder", "ascending") or "ascending").strip().lower()
+        _apply_target_order([], target_order)  # validate without changing stored source order
         if not room:
             raise ValueError("Room wajib diisi")
         if len(targets) > 500:
             raise ValueError("Maksimal 500 target")
         session_id = request.get("session_id")
-        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target}
+        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target, "targetOrder":target_order}
         return json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms})
     except Exception as exc:
         return json_response({"ok":False,"error":str(exc)}, status=400)
@@ -1020,6 +1036,7 @@ def _launch_kick_job(session_id, data):
         socket_apply_every = min(10, max(1, int(data.get("socketApplyEvery", data.get("delaySocketApplyEvery")) or 1)))
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery")) or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
+        target_order = str(data.get("targetOrder", "ascending") or "ascending").strip().lower()
     except Exception:
         return {"ok":False,"error":"Parameter kick tidak valid"}, 400
     if not room or not targets:
@@ -1027,6 +1044,10 @@ def _launch_kick_job(session_id, data):
     socket_entries = session_sockets(session_id)
     own_ws_names = {name.casefold() for name, _ws in socket_entries}
     targets = [t for t in targets if t.casefold() not in own_ws_names]
+    try:
+        targets = _apply_target_order(targets, target_order)
+    except ValueError as exc:
+        return {"ok":False,"error":str(exc)}, 400
     if not socket_entries:
         return {"ok":False,"error":"Tidak ada WebSocket yang aktif"}, 409
     if not targets:
@@ -1057,7 +1078,7 @@ def _launch_kick_job(session_id, data):
             if not ACTIVE_KICK_JOBS[job_key]:
                 ACTIVE_KICK_JOBS.pop(job_key, None)
     task.add_done_callback(_job_done)
-    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
+    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"targetOrder":target_order,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
 
 @require_auth
 async def kick_loop(request):
