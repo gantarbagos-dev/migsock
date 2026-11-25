@@ -64,6 +64,7 @@ WS_SESSION = {}
 WS_ROLE = {}
 KICK_RATE_LOCKS = {}
 KICK_RATE_STATE = {}
+UPSTREAM_SEND_LOCKS = {}
 SESSION_BROWSERS = {}
 BROWSER_SESSION = {}
 BROWSER_CLIENTS = set()
@@ -523,6 +524,7 @@ def register_socket(session_id, username, ws, role="troop"):
     ACTIVE_UPSTREAM[(session_id, key)] = ws
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_STATE.setdefault(id(ws), {"timestamps": deque()})
+    UPSTREAM_SEND_LOCKS.setdefault(id(ws), asyncio.Lock())
 
 async def _close_upstream_resource(ws):
     resource = DETACHED_UPSTREAM.pop(id(ws), None)
@@ -572,6 +574,7 @@ def unregister_socket(session_id, username, ws):
     WS_ROLE.pop(id(ws), None)
     KICK_RATE_LOCKS.pop(id(ws), None)
     KICK_RATE_STATE.pop(id(ws), None)
+    UPSTREAM_SEND_LOCKS.pop(id(ws), None)
 
 def session_sockets(session_id):
     sockets = SESSION_UPSTREAM.get(session_id, {})
@@ -636,20 +639,23 @@ async def send_kick(ws, room, target, max_per_window=None, serialized_payload=No
         await asyncio.sleep(wait_for)
 
     # The caller may provide a job-scoped serialized payload shared by all
-    # WebSockets receiving this exact room/target command.
+    # WebSockets receiving this exact room/target command. A shared send lock
+    # also serializes Kick writes with ordinary browser-to-upstream relay writes.
     try:
+        send_lock = UPSTREAM_SEND_LOCKS.setdefault(wsid, asyncio.Lock())
         async with asyncio.timeout(KICK_SEND_TIMEOUT):
-            if ws.closed:
-                return False
-            if serialized_payload is None:
-                payload = {
-                    "type": "room.kick",
-                    "room": room,
-                    "target_username": target,
-                }
-                await ws.send_json(payload, dumps=json_dumps)
-            else:
-                await ws.send_str(serialized_payload)
+            async with send_lock:
+                if ws.closed:
+                    return False
+                if serialized_payload is None:
+                    payload = {
+                        "type": "room.kick",
+                        "room": room,
+                        "target_username": target,
+                    }
+                    await ws.send_json(payload, dumps=json_dumps)
+                else:
+                    await ws.send_str(serialized_payload)
             return True
     except (asyncio.TimeoutError, ConnectionError, OSError):
         print(f"[KICK SEND TIMEOUT/ERROR] ws={wsid}", flush=True)
@@ -1132,6 +1138,46 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             kick_payload_cache[cache_key] = serialized
         return serialized
 
+    # Hybrid transport: bounded per-socket queues + one writer coroutine per
+    # upstream socket. Socket groups are dispatched in parallel shards; no ACK
+    # protocol is introduced. Existing upstream room events remain the only
+    # source of confirmed-kick state.
+    SOCKET_QUEUE_MAXSIZE = 32
+    socket_queues = {}
+    socket_writer_tasks = {}
+
+    async def socket_writer(ws_name, ws, queue):
+        while True:
+            item = await queue.get()
+            try:
+                if item is None:
+                    return
+                target, serialized_payload, result_future = item
+                if result_future.cancelled():
+                    continue
+                try:
+                    result = await send_kick(
+                        ws, room, target, kick_limit_per_ws,
+                        serialized_payload=serialized_payload,
+                    )
+                except Exception as exc:
+                    print(f"[KICK WRITER ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
+                    result = False
+                if not result_future.done():
+                    result_future.set_result(result is True)
+            finally:
+                queue.task_done()
+
+    for ws_name, ws in socket_entries:
+        if ws is None or ws.closed:
+            continue
+        queue = asyncio.Queue(maxsize=SOCKET_QUEUE_MAXSIZE)
+        socket_queues[id(ws)] = queue
+        socket_writer_tasks[id(ws)] = asyncio.create_task(
+            socket_writer(ws_name, ws, queue),
+            name=f"kick-writer-{job_id}-{ws_name}",
+        )
+
     replacement_state = {
         "jobId": job_id,
         "sessionId": session_id,
@@ -1149,6 +1195,8 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         key = str(target or "").strip().casefold()
         return bool(key) and key in replacement_state["kicked"]
 
+    socket_apply_interval = min(10, max(1, int(socket_apply_every)))
+
     async def send_direct(ws_name, ws, target, serialized_payload, is_replacement=False):
         target_key = str(target or "").strip().casefold()
         if not target_key or ws is None or ws.closed:
@@ -1156,46 +1204,52 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         async with replacement_state["lock"]:
             if replacement_state.get("stopped") or target_key in replacement_state["kicked"]:
                 return False
-        try:
-            # The limiter may wait for a slot without the network-send timeout
-            # cancelling that wait. The serialized payload is reused across all
-            # sockets for this target; send_kick applies the existing limiter.
-            result = await send_kick(
-                ws, room, target, kick_limit_per_ws,
-                serialized_payload=serialized_payload,
-            )
-            return result is not False
-        except Exception as exc:
-            print(f"[KICK DIRECT ERROR] job={job_id} ws={ws_name} target={target!r}: {exc!r}", flush=True)
+        queue = socket_queues.get(id(ws))
+        if queue is None:
             return False
-
-    socket_apply_interval = min(10, max(1, int(socket_apply_every)))
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+        try:
+            # Awaiting put applies bounded backpressure instead of growing an
+            # unbounded task backlog when an upstream socket is slow.
+            await queue.put((target, serialized_payload, result_future))
+            return await result_future
+        except asyncio.CancelledError:
+            if not result_future.done():
+                result_future.cancel()
+            raise
 
     async def fanout_target(target, is_replacement=False):
-        """Send to active upstream WebSockets concurrently; isolate per-WS errors."""
+        """Dispatch socket shards concurrently through bounded single writers."""
         if replacement_state.get("stopped") or target_is_kicked(target):
             return 0
-        active = [(name, ws) for name, ws in socket_entries if not ws.closed]
+        active = [(name, ws) for name, ws in socket_entries
+                  if not ws.closed and id(ws) in socket_queues]
         if not active:
             return 0
-        tasks = []
-        # Serialize once for this room/target and reuse the exact JSON text for
-        # every upstream WebSocket in this fan-out (and later repeats).
         serialized_payload = get_serialized_kick_payload(target)
         socket_interval = max(0, delay_socket) / 1000.0
-        for index, (name, ws) in enumerate(active):
-            tasks.append(asyncio.create_task(
-                send_direct(
-                    name, ws, target, serialized_payload,
-                    is_replacement=is_replacement,
-                )
-            ))
-            # Apply Delay Socket after the selected number of socket starts.
-            # Tasks already started remain in flight while the next group is delayed.
-            if socket_interval and (index + 1) % socket_apply_interval == 0 and index + 1 < len(active):
+        shard_tasks = []
+        # Keep the existing Socket Apply grouping: each shard starts up to N
+        # sockets concurrently, while already-started shards remain in flight.
+        for shard_start in range(0, len(active), socket_apply_interval):
+            shard = active[shard_start:shard_start + socket_apply_interval]
+            shard_tasks.append(asyncio.ensure_future(asyncio.gather(
+                *(send_direct(name, ws, target, serialized_payload,
+                              is_replacement=is_replacement)
+                  for name, ws in shard),
+                return_exceptions=True,
+            )))
+            if (socket_interval and shard_start + socket_apply_interval < len(active)):
                 await asyncio.sleep(socket_interval)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return sum(1 for result in results if result is True)
+        if not shard_tasks:
+            return 0
+        results = await asyncio.gather(*shard_tasks, return_exceptions=True)
+        sent = 0
+        for shard_result in results:
+            if isinstance(shard_result, (list, tuple)):
+                sent += sum(1 for result in shard_result if result is True)
+        return sent
 
     async def dispatch_replacement(kicked_target):
         """Directly fan out a replacement target to all active sockets."""
@@ -1291,14 +1345,30 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
             pending = list(replacement_state["replacement_tasks"])
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+
+        # All dispatch tasks have completed; drain accepted writes before
+        # stopping each per-socket writer.
+        if socket_queues:
+            await asyncio.gather(*(queue.join() for queue in socket_queues.values()), return_exceptions=True)
     finally:
+        for queue in socket_queues.values():
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+        writer_tasks = list(socket_writer_tasks.values())
+        for task in writer_tasks:
+            if not task.done():
+                task.cancel()
+        if writer_tasks:
+            await asyncio.gather(*writer_tasks, return_exceptions=True)
         await publish_browser_event(session_id, {
             "type": "kick.job.finished",
             "jobId": job_id,
             "room": room,
             "stopped": bool(replacement_state.get("stopped")),
             "loopsCompleted": loop_no,
-            "mode": "parallel-fanout-direct",
+            "mode": "hybrid-sharded-single-writer-bounded-queue",
         })
         replacement_state["stopped"] = True
         job_key = (session_id, room_key)
