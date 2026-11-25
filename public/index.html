@@ -640,7 +640,14 @@ document.addEventListener('DOMContentLoaded',()=>{
       <div class="field"><label for="delayTargetApplyEvery">Delay Target Apply</label><select id="delayTargetApplyEvery">
         <option value="1" selected>Every 1 Target</option><option value="2">Every 2 Target</option><option value="3">Every 3 Target</option><option value="4">Every 4 Target</option><option value="5">Every 5 Target</option>
       </select></div>
-      <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" max="200" value="65"></div>
+      <div class="loop-target-pair">
+        <div class="field" id="loopKickField"><label for="loopKick">Loop</label><input id="loopKick" type="number" min="1" max="200" value="65"></div>
+        <div class="field" id="targetOrderField"><label for="targetOrder">Target Order</label><select id="targetOrder">
+          <option value="ascending" selected>Ascending</option>
+          <option value="descending">Descending</option>
+          <option value="random">Random</option>
+        </select></div>
+      </div>
     </div>
     <div class="kick-mode-layout kick-layout-option-b">
       <div class="kick-mode-stack kick-settings-stack">
@@ -1036,7 +1043,7 @@ async function syncBackendAutoConfig(force=false){
   autoConfigSyncBusy=true;
   try{
     const targets=getTargetNames();
-    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
+    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),targetOrder:document.getElementById('targetOrder')?.value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
     const payload=JSON.stringify(cfg);
     const now=Date.now();
     // Skip unchanged config posts during the 500ms watcher. A periodic refresh
@@ -1514,7 +1521,7 @@ async function kickAll(){
   const loop=Math.min(200,Math.max(1,Number(document.getElementById('loopKick').value)||1));
   const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||1));
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||1));
-  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
+  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),targetOrder:document.getElementById('targetOrder').value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/500ms/WS`);
   await syncBackendAutoConfig(true);
   const resetGeneration=troopResetGeneration;
@@ -1940,6 +1947,7 @@ function collectKickSet(){
     socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delaySocketApplyEvery").value)||1)),
     targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById("delayTargetApplyEvery").value)||1)),
     delayTarget:Number(document.getElementById("delayTarget").value)||0,
+    targetOrder:document.getElementById("targetOrder").value||"ascending",
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||150,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
@@ -1951,6 +1959,7 @@ function applyKickSet(cfg){
   document.getElementById("delaySocketApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.socketApplyEvery??1)||1)));
   document.getElementById("delayTargetApplyEvery").value=String(Math.min(10,Math.max(1,Number(cfg.targetApplyEvery??1)||1)));
   document.getElementById("delayTarget").value=String(cfg.delayTarget??20);
+  document.getElementById("targetOrder").value=["ascending","descending","random"].includes(cfg.targetOrder)?cfg.targetOrder:"ascending";
   document.getElementById("kickLimitPerWs").value=String(Math.min(200,Math.max(1,Number(cfg.kickLimitPerWs??150)||150)));
   document.getElementById("loopKick").value=String(cfg.loopKick??65);
   
@@ -2326,6 +2335,15 @@ setInterval(syncBackendAutoConfig,500);
 @media(max-width:600px){.room-users-card{padding:9px!important}.illustration-lists{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:7px!important}.illustration-lists>.list-card{padding:7px!important;border-radius:13px!important}.illustration-lists .listtitle{min-height:32px!important;margin-bottom:6px!important}.illustration-lists .listtitle>span:first-child{font-size:10px!important;gap:5px!important}.user-list-card .listtitle>span:first-child:before,.target-list-card .listtitle>span:first-child:before{font-size:15px}#userList,#targetList{height:clamp(185px,32vh,270px)!important;min-height:185px!important;padding:4px!important}#userList .user-item,#targetList .target-item{min-height:43px!important;gap:5px!important;padding:6px!important;font-size:10px!important}#userList .user-item>span:before,#targetList .target-item:before{flex-basis:25px;width:25px;height:25px;font-size:14px}.list-count{min-width:26px!important;height:23px!important;padding:0 6px!important;font-size:10px!important}.illustration-lists #clearTarget{width:25px!important;min-width:25px!important;height:23px!important;min-height:23px!important;font-size:11px!important}}
 @media(max-width:350px){.illustration-lists{gap:5px!important}.illustration-lists>.list-card{padding:5px!important}#userList .user-item,#targetList .target-item{font-size:9px!important;gap:4px!important;padding:5px 4px!important}#userList .user-item>span:before,#targetList .target-item:before{flex-basis:21px;width:21px;height:21px;font-size:12px}}
 
+
+/* Loop and Target Order share the existing final settings column. */
+.duel-settings-row{grid-template-columns:1fr 1fr 1fr 1fr 2.3fr!important}
+.duel-settings-row .loop-target-pair{display:grid;grid-column:1 / -1;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;align-items:end;min-width:0}
+.duel-settings-row .loop-target-pair .field{min-width:0}
+.duel-settings-row .loop-target-pair input,
+.duel-settings-row .loop-target-pair select{width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+@media(max-width:600px){.duel-settings-row{grid-template-columns:repeat(2,minmax(0,1fr))!important}.duel-settings-row .loop-target-pair{grid-column:1 / -1}}
+@media(max-width:390px){.duel-settings-row{grid-template-columns:repeat(2,minmax(0,1fr))!important}.duel-settings-row .loop-target-pair{grid-column:1 / -1}}
 </style>
 </body>
 </html>
