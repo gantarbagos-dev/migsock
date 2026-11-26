@@ -62,6 +62,7 @@ SESSION_UPSTREAM = {}
 WS_SESSION = {}
 # Socket role is explicit: only troop sockets participate in KickAll.
 WS_ROLE = {}
+WS_SLOT = {}
 KICK_RATE_LOCKS = {}
 KICK_RATE_STATE = {}
 UPSTREAM_SEND_LOCKS = {}
@@ -508,7 +509,7 @@ async def load_config_file(request):
         return json_response({"ok": False, "error": str(e)}, status=400)
 
 
-def register_socket(session_id, username, ws, role="troop"):
+def register_socket(session_id, username, ws, role="troop", slot=None):
     if not session_id or not username:
         return
     key = username.strip().casefold()
@@ -521,6 +522,10 @@ def register_socket(session_id, username, ws, role="troop"):
     SESSION_UPSTREAM.setdefault(session_id, {})[key] = ws
     WS_SESSION[id(ws)] = session_id
     WS_ROLE[id(ws)] = "bank" if str(role).lower() == "bank" else "troop"
+    try:
+        WS_SLOT[id(ws)] = max(1, min(10, int(slot))) if slot is not None and str(role).lower() != "bank" else None
+    except (TypeError, ValueError):
+        WS_SLOT[id(ws)] = None
     ACTIVE_UPSTREAM[(session_id, key)] = ws
     KICK_RATE_LOCKS.setdefault(id(ws), asyncio.Lock())
     KICK_RATE_STATE.setdefault(id(ws), {"timestamps": deque()})
@@ -572,6 +577,7 @@ def unregister_socket(session_id, username, ws):
             ACTIVE_UPSTREAM.pop(key, None)
     WS_SESSION.pop(id(ws), None)
     WS_ROLE.pop(id(ws), None)
+    WS_SLOT.pop(id(ws), None)
     KICK_RATE_LOCKS.pop(id(ws), None)
     KICK_RATE_STATE.pop(id(ws), None)
     UPSTREAM_SEND_LOCKS.pop(id(ws), None)
@@ -928,14 +934,16 @@ async def configure_auto_kick(request):
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery") or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
         target_order = str(data.get("targetOrder", "ascending") or "ascending").strip().lower()
+        split_mode = bool(data.get("splitMode", False))
+        split_countdown_ms = max(0, min(300, int(data.get("splitCountdownMs", 0) or 0)))
         _apply_target_order([], target_order)  # validate without changing stored source order
         if not room:
             raise ValueError("Room wajib diisi")
         if len(targets) > 500:
             raise ValueError("Maksimal 500 target")
         session_id = request.get("session_id")
-        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target, "targetOrder":target_order}
-        return json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms})
+        AUTO_KICK_CONFIGS[session_id] = {"room":room, "targets":targets, "countdownMs":countdown_ms, "timerKickall":trigger_ms, "loop":loops, "kickLimitPerWs":limit, "delaySocket":delay_socket, "socketApplyEvery":socket_apply_every, "targetApplyEvery":target_apply_every, "delayTarget":delay_target, "targetOrder":target_order, "splitMode":split_mode, "splitCountdownMs":split_countdown_ms}
+        return json_response({"ok":True,"configured":True,"room":room,"targets":len(targets),"countdownMs":countdown_ms,"timerKickall":trigger_ms,"splitMode":split_mode,"splitCountdownMs":split_countdown_ms})
     except Exception as exc:
         return json_response({"ok":False,"error":str(exc)}, status=400)
 
@@ -1043,6 +1051,8 @@ def _launch_kick_job(session_id, data):
         target_apply_every = min(10, max(1, int(data.get("targetApplyEvery", data.get("delayTargetApplyEvery")) or 1)))
         delay_target = max(0, min(60000, int(data.get("delayTarget", 10) or 0)))
         target_order = str(data.get("targetOrder", "ascending") or "ascending").strip().lower()
+        split_mode = bool(data.get("splitMode", False))
+        split_countdown_ms = max(0, min(300, int(data.get("splitCountdownMs", 0) or 0)))
     except Exception:
         return {"ok":False,"error":"Parameter kick tidak valid"}, 400
     if not room or not targets:
@@ -1054,6 +1064,14 @@ def _launch_kick_job(session_id, data):
         targets = _apply_target_order(targets, target_order)
     except ValueError as exc:
         return {"ok":False,"error":str(exc)}, 400
+    if split_mode:
+        socket_entries.sort(key=lambda entry: (WS_SLOT.get(id(entry[1])) or 99, entry[0].casefold()))
+        group_one = [entry for entry in socket_entries if WS_SLOT.get(id(entry[1])) in range(1, 6)]
+        group_two = [entry for entry in socket_entries if WS_SLOT.get(id(entry[1])) in range(6, 11)]
+        if not group_one or not group_two:
+            return {"ok":False,"error":"Split Mode membutuhkan WS aktif dari kedua kelompok (WS1-5 dan WS6-10)"}, 409
+    else:
+        group_one = group_two = None
     if not socket_entries:
         return {"ok":False,"error":"Tidak ada WebSocket yang aktif"}, 409
     if not targets:
@@ -1066,7 +1084,10 @@ def _launch_kick_job(session_id, data):
         return {"ok":False,"error":"Masih ada job aktif untuk room ini","active":True,"jobIds":active_ids}, 409
     job_id = uuid.uuid4().hex[:12]
     ACTIVE_KICK_TASKS[job_key] = [job_id]
-    task = asyncio.create_task(_run_kick_job(job_id, session_id, room, list(targets), socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target))
+    if split_mode:
+        task = asyncio.create_task(_run_split_kick_job(job_id, session_id, room, list(targets), group_one, group_two, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, split_countdown_ms))
+    else:
+        task = asyncio.create_task(_run_kick_job(job_id, session_id, room, list(targets), socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target))
     ACTIVE_KICK_TASK_HANDLES.setdefault(job_key, {})[job_id] = task
     def _job_done(_task):
         current = ACTIVE_KICK_TASKS.get(job_key, [])
@@ -1084,7 +1105,7 @@ def _launch_kick_job(session_id, data):
             if not ACTIVE_KICK_JOBS[job_key]:
                 ACTIVE_KICK_JOBS.pop(job_key, None)
     task.add_done_callback(_job_done)
-    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"targetOrder":target_order,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
+    return {"ok":True,"accepted":True,"jobId":job_id,"websockets":len(socket_entries),"splitMode":split_mode,"splitCountdownMs":split_countdown_ms,"groups":{"group1":len(group_one or []),"group2":len(group_two or [])},"targets":len(targets),"loop":loops,"kickLimitPerWs":kick_limit_per_ws,"delaySocket":delay_socket,"socketApplyEvery":socket_apply_every,"targetApplyEvery":target_apply_every,"delayTarget":delay_target,"targetOrder":target_order,"dispatch":"asyncio.gather","transport":"browser-ws-events"}, 202
 
 @require_auth
 async def kick_loop(request):
@@ -1094,6 +1115,66 @@ async def kick_loop(request):
         return json_response({"ok": False, "error": "JSON tidak valid"}, status=400)
     body, status = _launch_kick_job(request.get("session_id"), data)
     return json_response(body, status=status)
+
+async def _run_split_kick_job(job_id, session_id, room, targets, group_one, group_two, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, split_countdown_ms):
+    """Trigger group 1, start the split timer immediately, then trigger group 2 at zero."""
+    group_one_task = None
+    group_two_task = None
+    try:
+        await publish_browser_event(session_id, {"type":"kick.split.phase", "room":room, "jobId":job_id, "phase":"group1", "countdownMs":0})
+
+        # Trigger group 1 first. The split countdown begins as soon as its worker
+        # has been scheduled; it does not wait for the group 1 worker to finish.
+        group_one_task = asyncio.create_task(
+            _run_kick_job_impl(
+                job_id, session_id, room, targets, group_one, loops,
+                kick_limit_per_ws, delay_socket, socket_apply_every,
+                target_apply_every, delay_target, publish_finished=False
+            )
+        )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + split_countdown_ms / 1000.0
+        await publish_browser_event(session_id, {
+            "type":"kick.split.countdown", "room":room, "jobId":job_id,
+            "remainingMs":split_countdown_ms
+        })
+        while True:
+            remaining_ms = max(0, int((deadline - loop.time()) * 1000 + 0.999))
+            await publish_browser_event(session_id, {
+                "type":"kick.split.countdown", "room":room, "jobId":job_id,
+                "remainingMs":remaining_ms
+            })
+            if remaining_ms <= 0:
+                break
+            await _wait_until_monotonic(min(deadline, loop.time() + 0.025))
+
+        # At countdown zero, trigger group 2 without waiting for group 1 to finish.
+        await publish_browser_event(session_id, {
+            "type":"kick.split.phase", "room":room, "jobId":job_id,
+            "phase":"group2", "countdownMs":0
+        })
+        group_two_task = asyncio.create_task(
+            _run_kick_job_impl(
+                job_id, session_id, room, targets, group_two, loops,
+                kick_limit_per_ws, delay_socket, socket_apply_every,
+                target_apply_every, delay_target, publish_finished=True
+            )
+        )
+        # Keep the orchestration job active until both groups have completed.
+        await asyncio.gather(group_one_task, group_two_task)
+    except asyncio.CancelledError:
+        # Stop/reset must also stop both child workers.
+        children = [task for task in (group_one_task, group_two_task) if task is not None]
+        for task in children:
+            if not task.done():
+                task.cancel()
+        if children:
+            await asyncio.gather(*children, return_exceptions=True)
+        raise
+    except Exception as exc:
+        print(f"[KICK SPLIT ERROR] job={job_id} room={room!r}: {exc!r}", flush=True)
+        raise
 
 async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target):
     # Keep worker failures observable by the frontend instead of leaving a
@@ -1110,7 +1191,7 @@ async def _run_kick_job(job_id, session_id, room, targets, socket_entries, loops
         print(f"[KICK JOB ERROR] job={job_id} session={session_id[:8]} room={room!r}: {exc!r}", flush=True)
         raise
 
-async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target):
+async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, loops, kick_limit_per_ws, delay_socket, socket_apply_every, target_apply_every, delay_target, publish_finished=True):
     """Run Kick All with direct parallel fan-out and no per-socket queue.
 
     Each target is dispatched directly to every active upstream socket with
@@ -1362,8 +1443,9 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
                 task.cancel()
         if writer_tasks:
             await asyncio.gather(*writer_tasks, return_exceptions=True)
-        await publish_browser_event(session_id, {
-            "type": "kick.job.finished",
+        if publish_finished:
+            await publish_browser_event(session_id, {
+                "type": "kick.job.finished",
             "jobId": job_id,
             "room": room,
             "stopped": bool(replacement_state.get("stopped")),
@@ -1816,6 +1898,7 @@ async def proxy(request):
         session = ClientSession()
         upstream_username = None
         upstream_role = "troop"
+        upstream_slot = None
         active_room = None
         explicit_logout = False
         # No receive timeout: the API is a long-lived WebSocket and has its own JSON ping rule.
@@ -1939,7 +2022,8 @@ async def proxy(request):
                         break
                     if control_type == "developer.login":
                         upstream_username = str(payload.get("username", "")).strip() or None
-                        register_socket(session_id, upstream_username, upstream, upstream_role)
+                        upstream_slot = payload.get("slot")
+                        register_socket(session_id, upstream_username, upstream, upstream_role, upstream_slot)
                 except Exception:
                     pass
                 await upstream.send_str(msg.data)
