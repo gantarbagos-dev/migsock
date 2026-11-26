@@ -529,10 +529,14 @@ def register_socket(session_id, username, ws, role="troop"):
 async def _close_upstream_resource(ws):
     resource = DETACHED_UPSTREAM.pop(id(ws), None)
     if resource:
-        task = resource.get("relay_task")
-        if task and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        tasks = []
+        for task_name in ("relay_task", "ping_task"):
+            task = resource.get(task_name)
+            if task and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         session = resource.get("session")
     else:
         session = None
@@ -1918,7 +1922,11 @@ async def proxy(request):
                     print(f"UPSTREAM END type={msg.type} exception={upstream.exception()!r}", flush=True)
                     break
             if browser.closed and upstream is not None:
-                DETACHED_UPSTREAM.pop(id(upstream), None)
+                detached_resource = DETACHED_UPSTREAM.pop(id(upstream), None)
+                detached_ping = detached_resource.get("ping_task") if detached_resource else ping_task
+                if detached_ping is not None and detached_ping is not asyncio.current_task() and not detached_ping.done():
+                    detached_ping.cancel()
+                    await asyncio.gather(detached_ping, return_exceptions=True)
                 unregister_socket(session_id, upstream_username, upstream)
                 if session is not None and not session.closed:
                     await session.close()
@@ -1980,9 +1988,6 @@ async def proxy(request):
                 pass
             await browser.close(code=1011, message=b"proxy error")
     finally:
-        if ping_task is not None and not detached_upstream:
-            ping_task.cancel()
-            await asyncio.gather(ping_task, return_exceptions=True)
         BROWSER_CLIENTS.discard(browser)
         browsers = SESSION_BROWSERS.get(session_id, set())
         browsers.discard(browser)
@@ -1992,25 +1997,37 @@ async def proxy(request):
         registered = False
         if upstream is not None and session_id and upstream_username:
             registered = SESSION_UPSTREAM.get(session_id, {}).get(upstream_username.strip().casefold()) is upstream
+
         if registered and browser.closed and not explicit_logout and not upstream.closed:
-            # Browser disconnected, but the account socket stays owned by the backend.
-            DETACHED_UPSTREAM[id(upstream)] = {"session_id":session_id,"username":upstream_username,"ws":upstream,"session":session,"relay_task":relay_task}
+            # Browser disconnected: backend keeps both the upstream reader and
+            # application-level ping task alive until explicit cleanup or upstream close.
+            DETACHED_UPSTREAM[id(upstream)] = {
+                "session_id": session_id,
+                "username": upstream_username,
+                "ws": upstream,
+                "session": session,
+                "relay_task": relay_task,
+                "ping_task": ping_task,
+            }
             detached_upstream = True
             print(f"[UPSTREAM DETACHED] session={session_id[:8]} username={upstream_username!r}; backend continues without browser", flush=True)
         else:
+            if ping_task is not None and not ping_task.done():
+                ping_task.cancel()
+                await asyncio.gather(ping_task, return_exceptions=True)
             if upstream is not None:
                 for participant_key, snapshots in list(ROOM_PARTICIPANTS.items()):
                     snapshots.pop(id(upstream), None)
                     if not snapshots:
                         ROOM_PARTICIPANTS.pop(participant_key, None)
-            if relay_task is not None:
+            if relay_task is not None and not relay_task.done():
                 relay_task.cancel()
                 await asyncio.gather(relay_task, return_exceptions=True)
             if upstream is not None:
                 unregister_socket(session_id, upstream_username, upstream)
                 if not upstream.closed:
                     await upstream.close()
-            if session is not None:
+            if session is not None and not session.closed:
                 await session.close()
     return browser
 
