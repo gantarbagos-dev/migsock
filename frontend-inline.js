@@ -280,23 +280,12 @@ function dispatchSocketEvent(m,i){
     if(m.type==="kick.countdown.error") log(0,"Backend countdown error: "+(m.error||"unknown"));
     return;
   }
-  if(m.type==="kick.split.phase"){
-    const el=document.getElementById("splitCountdownDisplay");
-    if(el)el.textContent=m.phase==="group1"?"Kelompok 1 / WS1-5":m.phase==="group2"?"Kelompok 2 / WS6-10":"—";
-    log(0,m.phase==="group1"?"SPLIT: kelompok 1 (WS1-5) mulai": "SPLIT: countdown selesai, kelompok 2 (WS6-10) mulai");return;
-  }
-  if(m.type==="kick.split.countdown"){
-    const el=document.getElementById("splitCountdownDisplay");
-    if(el)el.textContent=String(Math.max(0,Number(m.remainingMs)||0))+" ms";
-    return;
-  }
   if(m.type==="kick.job.started"){
     kickRunning=true;
     setKickButtonState(true);
     return;
   }
   if(m.type==="kick.job.finished"){
-    const splitDisplay=document.getElementById("splitCountdownDisplay");if(splitDisplay)splitDisplay.textContent="Selesai";
     kickRunning=false;
     setKickButtonState(false);
     return;
@@ -305,7 +294,7 @@ function dispatchSocketEvent(m,i){
   if(m.type==="proxy.error"){status(i,"PROXY ERROR","error");log(i,"PROXY ERROR: "+(m.data?.message||"unknown"));return}
   if(isKickEvent(m)){startCountdownFromKick(m)}
   if(handleParticipants(m,i))return;
-  if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password,slot:i+1},true)}
+  if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password},true)}
   else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");startPing(i);send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
   else if(m.type==="room.join.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.joined===true||m.success===true;if(ok){clients[i].inRoom=true;log(i,"ENTER ROOM OK");const r=roomEl.value.trim();if(r)send(i,{type:"room.participants",room:r},true)}else log(i,"ENTER ROOM RESULT "+JSON.stringify(m))}
   else if(m.type==="room.leave.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.left===true||m.success===true;if(ok){clients[i].inRoom=false;log(i,"LEAVE ROOM OK")}else log(i,"LEAVE ROOM RESULT "+JSON.stringify(m))}
@@ -444,7 +433,7 @@ async function syncBackendAutoConfig(force=false){
   autoConfigSyncBusy=true;
   try{
     const targets=getTargetNames();
-    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),splitMode:!!document.getElementById('splitMode')?.checked,splitCountdownMs:Math.min(300,Math.max(0,Number(document.getElementById('splitCountdownMs')?.value)||0)),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),targetOrder:document.getElementById('targetOrder')?.value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
+    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),targetOrder:document.getElementById('targetOrder')?.value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
     const payload=JSON.stringify(cfg);
     const now=Date.now();
     // Skip unchanged config posts during the 500ms watcher. A periodic refresh
@@ -922,7 +911,7 @@ async function kickAll(){
   const loop=Math.min(200,Math.max(1,Number(document.getElementById('loopKick').value)||1));
   const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||1));
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||1));
-  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),targetOrder:document.getElementById('targetOrder').value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),splitMode:!!document.getElementById('splitMode')?.checked,splitCountdownMs:Math.min(300,Math.max(0,Number(document.getElementById('splitCountdownMs')?.value)||0)),};
+  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),targetOrder:document.getElementById('targetOrder').value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/500ms/WS`);
   await syncBackendAutoConfig(true);
   const resetGeneration=troopResetGeneration;
@@ -1352,9 +1341,7 @@ function collectKickSet(){
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||150,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
-    timerKickall:Number(document.getElementById("timerKickall").value)||0,
-    splitMode:!!document.getElementById("splitMode").checked,
-    splitCountdownMs:Math.min(300,Math.max(0,Number(document.getElementById("splitCountdownMs").value)||0))
+    timerKickall:Number(document.getElementById("timerKickall").value)||0
   };
 }
 function applyKickSet(cfg){
@@ -1367,8 +1354,6 @@ function applyKickSet(cfg){
   document.getElementById("loopKick").value=String(cfg.loopKick??65);
   
   document.getElementById("timerKickall").value=String(cfg.timerKickall??1500);
-  document.getElementById("splitMode").checked=!!cfg.splitMode;
-  document.getElementById("splitCountdownMs").value=String(Math.min(300,Math.max(0,Number(cfg.splitCountdownMs??0)||0)));
 }
 async function saveKickSet(){
   const name=document.getElementById("saveLoadSet").value.trim() || "kickset";
