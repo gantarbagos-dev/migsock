@@ -1817,6 +1817,8 @@ async def proxy(request):
     upstream = None
     session = None
     relay_task = None
+    ping_task = None
+    detached_upstream = False
     try:
         session = ClientSession()
         upstream_username = None
@@ -1921,6 +1923,20 @@ async def proxy(request):
                 if session is not None and not session.closed:
                     await session.close()
 
+        async def upstream_json_ping():
+            # Keep the upstream application-level JSON ping alive on the backend,
+            # independent of any browser tab or split-screen state.
+            while upstream is not None and not upstream.closed:
+                await asyncio.sleep(40)
+                if upstream is None or upstream.closed:
+                    break
+                try:
+                    await upstream.send_json({"type": "ping"}, dumps=json_dumps)
+                except Exception as ping_error:
+                    print(f"UPSTREAM JSON PING FAILED: {type(ping_error).__name__}: {ping_error!r}", flush=True)
+                    break
+
+        ping_task = asyncio.create_task(upstream_json_ping())
         relay_task = asyncio.create_task(upstream_to_browser())
 
         async for msg in browser:
@@ -1964,6 +1980,9 @@ async def proxy(request):
                 pass
             await browser.close(code=1011, message=b"proxy error")
     finally:
+        if ping_task is not None and not detached_upstream:
+            ping_task.cancel()
+            await asyncio.gather(ping_task, return_exceptions=True)
         BROWSER_CLIENTS.discard(browser)
         browsers = SESSION_BROWSERS.get(session_id, set())
         browsers.discard(browser)
@@ -1976,6 +1995,7 @@ async def proxy(request):
         if registered and browser.closed and not explicit_logout and not upstream.closed:
             # Browser disconnected, but the account socket stays owned by the backend.
             DETACHED_UPSTREAM[id(upstream)] = {"session_id":session_id,"username":upstream_username,"ws":upstream,"session":session,"relay_task":relay_task}
+            detached_upstream = True
             print(f"[UPSTREAM DETACHED] session={session_id[:8]} username={upstream_username!r}; backend continues without browser", flush=True)
         else:
             if upstream is not None:
