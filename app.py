@@ -1201,9 +1201,14 @@ async def _run_kick_job_impl(job_id, session_id, room, targets, socket_entries, 
         target_key = str(target or "").strip().casefold()
         if not target_key or ws is None or ws.closed:
             return False
-        async with replacement_state["lock"]:
-            if replacement_state.get("stopped") or target_key in replacement_state["kicked"]:
-                return False
+        # These state reads are safe without the shared asyncio.Lock: all job
+        # state is mutated on this event loop, and there is no await between
+        # the reads. The previous lock protected only this check (not queue.put),
+        # so it did not close the later enqueue race; dropping it removes one
+        # contended lock acquisition per target/socket without changing order,
+        # queue backpressure, rate limiting, or confirmation handling.
+        if replacement_state.get("stopped") or target_key in replacement_state["kicked"]:
+            return False
         queue = socket_queues.get(id(ws))
         if queue is None:
             return False
