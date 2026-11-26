@@ -905,7 +905,7 @@ function dispatchSocketEvent(m,i){
   if(isKickEvent(m)){startCountdownFromKick(m)}
   if(handleParticipants(m,i))return;
   if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password},true)}
-  else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");startPing(i);send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
+  else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
   else if(m.type==="room.join.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.joined===true||m.success===true;if(ok){clients[i].inRoom=true;log(i,"ENTER ROOM OK");const r=roomEl.value.trim();if(r)send(i,{type:"room.participants",room:r},true)}else log(i,"ENTER ROOM RESULT "+JSON.stringify(m))}
   else if(m.type==="room.leave.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.left===true||m.success===true;if(ok){clients[i].inRoom=false;log(i,"LEAVE ROOM OK")}else log(i,"LEAVE ROOM RESULT "+JSON.stringify(m))}
   else if(m.type==="session.replaced"){clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"REPLACED","error")}
@@ -1297,7 +1297,7 @@ function setPass(){
 }
 function send(i,o,hideLog=false){const c=clients[i];if(!c.ws||c.ws.readyState!==WebSocket.OPEN){log(i,"Socket belum OPEN");return false}c.ws.send(JSON.stringify(o));if(hideLog)log(i,`SEND ${o.type}`);else log(i,"SEND "+JSON.stringify(o));return true}
 function stopPing(i){if(clients[i].pingTimer){clearInterval(clients[i].pingTimer);clients[i].pingTimer=null}}
-function startPing(i){stopPing(i);clients[i].pingTimer=setInterval(()=>{if(clients[i].loggedIn)send(i,{type:"ping"},true)},45000)}
+function startPing(i){stopPing(i)}
 function logoutOne(i){
   const c=clients[i];
   c.generation++;
@@ -1597,7 +1597,7 @@ function waitForTroopTransfer(i,timeoutMs=12000){
 
 function setBankBalance(value){bankClient.balance=value;bankBalanceEl.textContent=formatNominal(value)}
 function bankStatus(text,ok=false){flatStatusEl.textContent=text;flatStatusEl.style.color=ok?"#22c55e":"#94a3b8"}
-function startBankPing(){stopBankPing();bankClient.pingTimer=setInterval(()=>{if(bankClient.ws?.readyState===WebSocket.OPEN)bankClient.ws.send(JSON.stringify({type:"ping"}))},40000)}
+function startBankPing(){stopBankPing()}
 function stopBankPing(){if(bankClient.pingTimer){clearInterval(bankClient.pingTimer);bankClient.pingTimer=null}}
 function bankSend(payload){if(!bankClient.ws||bankClient.ws.readyState!==WebSocket.OPEN){bankStatus("Bank socket belum terhubung.");return false}bankClient.ws.send(JSON.stringify(payload));return true}
 function flatRows(){return [...flatReportBody.querySelectorAll('tr')].map((tr)=>tr)}
@@ -1716,7 +1716,7 @@ function refreshFlatBalances(rows){
 function handleBankMessage(m){
   const type=String(m?.type||'').toLowerCase();
   if(type==='auth.required'){bankSend({type:'developer.login',username:document.getElementById('usernamebank').value.trim(),password:document.getElementById('passwordbank').value});return}
-  if(type==='session.ready'){bankClient.loggedIn=true;startBankPing();const b=extractBalance(m);if(b!==null)setBankBalance(b);bankSend({type:'wallet.balance'});bankStatus('BANK ONLINE',true);return}
+  if(type==='session.ready'){bankClient.loggedIn=true;const b=extractBalance(m);if(b!==null)setBankBalance(b);bankSend({type:'wallet.balance'});bankStatus('BANK ONLINE',true);return}
   if(type==='wallet.balance.result'){const b=extractBalance(m);if(b!==null)setBankBalance(b);if(flatRefreshState){flatRefreshState.bankDone=true;maybeFinishFlatRefresh()}return}
   if(type==='wallet.transfer.result'){handleFlatTransferResult(m);return}
   if(type==='session.replaced'){bankClient.loggedIn=false;stopBankPing();bankStatus('BANK SESSION REPLACED');return}
