@@ -86,7 +86,7 @@ html{background:var(--bg);scroll-behavior:smooth}body{background:radial-gradient
 .tabs{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:12px 0;padding:5px;border:1px solid rgba(143,164,255,.19);border-radius:16px;background:rgba(10,15,31,.92);box-shadow:0 8px 24px rgba(0,0,0,.24);backdrop-filter:blur(18px)}.tab-btn{border:1px solid transparent!important;border-radius:11px!important;min-height:43px;padding:9px 5px!important;background:transparent!important;color:#9eaccd!important;font-size:11px!important;letter-spacing:.6px;font-weight:900}.tab-btn.active{background:linear-gradient(110deg,#277cf6,#7654ff)!important;color:white!important;border-color:rgba(255,255,255,.15)!important;box-shadow:0 5px 15px rgba(75,102,255,.3)}
 .panel{border:1px solid var(--line);border-radius:19px;background:linear-gradient(145deg,rgba(19,28,52,.97),rgba(12,18,35,.97));padding:13px;box-shadow:0 10px 26px rgba(0,0,0,.19),inset 0 1px rgba(255,255,255,.035);backdrop-filter:blur(10px)}.section-card{position:relative;overflow:hidden}.section-heading{gap:10px;margin-bottom:13px}.section-heading strong{font-size:14px;letter-spacing:.1px;color:#f5f7ff}.section-heading small{font-size:11px;color:var(--muted);line-height:1.45}.section-icon{width:38px;height:38px;min-width:38px;display:grid;place-items:center;border-radius:13px;background:linear-gradient(145deg,rgba(57,231,255,.16),rgba(111,87,255,.2));border:1px solid rgba(115,166,255,.22);font-size:18px}.count-pill{border-radius:999px;background:rgba(57,231,255,.1);border:1px solid rgba(57,231,255,.2);color:#75f0ff;padding:5px 9px;font-size:10px;font-weight:900}
 .field label,.listtitle span{color:#b5c2e1;font-size:11px;font-weight:800;letter-spacing:.35px}input,select{background:#080e20!important;color:#f7f8ff!important;border:1px solid #2b385a!important;border-radius:12px!important;min-height:45px;padding:10px 12px!important;box-shadow:inset 0 1px rgba(255,255,255,.025);font-size:14px}input::placeholder{color:#657392}input:focus,select:focus{border-color:#54dfff!important;box-shadow:0 0 0 3px rgba(57,231,255,.12),0 0 20px rgba(57,231,255,.05)!important;outline:none}button{border-radius:12px!important;min-height:44px;border:1px solid rgba(147,174,255,.18)!important;background:linear-gradient(135deg,#1b2a4b,#172039)!important;color:#f6f7ff!important;font-size:11px;font-weight:900;letter-spacing:.3px;box-shadow:0 4px 12px rgba(0,0,0,.13);transition:transform .15s ease,filter .15s ease,box-shadow .15s ease}button:active{transform:scale(.98)}button.primary{background:linear-gradient(110deg,#16b9e8,#367dff 54%,#8154f7)!important;border-color:rgba(130,207,255,.3)!important;box-shadow:0 7px 17px rgba(52,115,255,.2)}button.danger{background:linear-gradient(110deg,#fb5479,#bb326d)!important;border-color:rgba(255,141,174,.25)!important}.green{background:linear-gradient(110deg,#0baf8b,#20c98b)!important}.actions{gap:9px}.actions button{min-height:47px}.roomrow{gap:6px}.roomrow button{padding:8px 5px;font-size:10px}.lists-grid{gap:9px}#userList,#targetList{height:clamp(150px,27vh,230px);background:#080e20;border:1px solid #2a3655;border-radius:13px;padding:5px}#userList .user-item,#targetList .target-item{padding:10px 8px;border-bottom-color:rgba(126,149,200,.13);font-size:12px}#userList .user-check{accent-color:#4f8cff;width:20px;height:20px}#targetList .target-item{background:rgba(130,92,255,.045)}.trash-btn{min-height:32px!important;height:32px!important;background:rgba(255,85,119,.12)!important;color:#ff8da5!important;border-color:rgba(255,85,119,.2)!important}table{border-radius:12px;background:rgba(7,12,26,.7)}th{color:#a8b8dd;background:rgba(79,140,255,.09);font-size:10px;letter-spacing:.35px}th,td{border-bottom:1px solid rgba(126,149,200,.14);padding:9px 7px}td{font-size:11px}.status-balloon.online{background:var(--green)}.wallet-caption{color:var(--cyan)}.flat-progress{background:#080e20;border-radius:99px;overflow:hidden}.flat-progress-fill{background:linear-gradient(90deg,#26d8f3,#4f8cff,#a16bff)!important}.flat-summary{gap:7px}.flat-summary span{background:rgba(79,140,255,.08);border:1px solid rgba(143,164,255,.15);padding:7px 8px;border-radius:10px}.tab-panel{animation:fadeUp .22s ease both}
-@media(max-width:600px){.split-mode-settings{grid-template-columns:repeat(2,minmax(0,1fr))!important}.split-mode-settings .field:last-child{grid-column:1/-1}.wrap{padding:9px;padding-top:max(9px,env(safe-area-inset-top))}.top.hero{padding:12px;border-radius:18px}.brand-mark{width:42px;height:42px}.brand-mark img{width:35px;height:35px}.hero-chip{font-size:9px;padding:7px 9px}.panel{padding:11px;border-radius:16px;margin-bottom:9px}.section-heading{margin-bottom:11px}.setting-row{gap:8px!important}.field label{font-size:10px;margin-bottom:5px}.troop-row{grid-template-columns:minmax(0,1fr) 58px 58px!important}.troop-row .field:last-child{grid-column:1/-1}.troop-row .field:last-child button{width:100%}.save-row{grid-template-columns:minmax(0,1fr) 70px 70px!important}.pass-row{grid-template-columns:minmax(0,1fr) 92px!important}.lists-grid{grid-template-columns:1fr 1fr;gap:7px}.listtitle{margin-bottom:7px}.listtitle span{font-size:10px}.roomrow{grid-template-columns:minmax(0,1fr) 62px 62px!important}.roomrow>*:last-child{grid-column:1/-1}.roomrow input{min-width:0}.roomrow button{font-size:10px}.kick-mode-layout{grid-template-columns:minmax(0,1fr) 88px!important}.duel-settings-row,.settings-row{grid-template-columns:1fr 1fr!important}.kickall-side{font-size:10px}.kick-socket-name{font-size:10px}.kick-socket-detail{font-size:9px}table{min-width:540px}.troop-table-card{overflow:hidden}.troop-table-card table{min-width:0;table-layout:fixed}.troop-table-card th,.troop-table-card td{padding:8px 4px;font-size:10px;overflow-wrap:anywhere}.troop-table-card th:nth-child(1){width:24px}.troop-table-card th:nth-child(2){width:27%}.troop-table-card th:nth-child(3){width:43%}.troop-table-card th:nth-child(4){width:22%}.password-wrap{gap:3px}.password-wrap input{padding:7px 5px!important;font-size:11px;min-width:0}.wallet-caption{font-size:11px;min-width:22px}.status-balloon{width:9px;height:9px}.actions.login-actions button{font-size:10px;padding:8px 5px}.tab-btn{min-height:42px}.flat-report{overflow-x:auto}}
+@media(max-width:600px){.wrap{padding:9px;padding-top:max(9px,env(safe-area-inset-top))}.top.hero{padding:12px;border-radius:18px}.brand-mark{width:42px;height:42px}.brand-mark img{width:35px;height:35px}.hero-chip{font-size:9px;padding:7px 9px}.panel{padding:11px;border-radius:16px;margin-bottom:9px}.section-heading{margin-bottom:11px}.setting-row{gap:8px!important}.field label{font-size:10px;margin-bottom:5px}.troop-row{grid-template-columns:minmax(0,1fr) 58px 58px!important}.troop-row .field:last-child{grid-column:1/-1}.troop-row .field:last-child button{width:100%}.save-row{grid-template-columns:minmax(0,1fr) 70px 70px!important}.pass-row{grid-template-columns:minmax(0,1fr) 92px!important}.lists-grid{grid-template-columns:1fr 1fr;gap:7px}.listtitle{margin-bottom:7px}.listtitle span{font-size:10px}.roomrow{grid-template-columns:minmax(0,1fr) 62px 62px!important}.roomrow>*:last-child{grid-column:1/-1}.roomrow input{min-width:0}.roomrow button{font-size:10px}.kick-mode-layout{grid-template-columns:minmax(0,1fr) 88px!important}.duel-settings-row,.settings-row{grid-template-columns:1fr 1fr!important}.kickall-side{font-size:10px}.kick-socket-name{font-size:10px}.kick-socket-detail{font-size:9px}table{min-width:540px}.troop-table-card{overflow:hidden}.troop-table-card table{min-width:0;table-layout:fixed}.troop-table-card th,.troop-table-card td{padding:8px 4px;font-size:10px;overflow-wrap:anywhere}.troop-table-card th:nth-child(1){width:24px}.troop-table-card th:nth-child(2){width:27%}.troop-table-card th:nth-child(3){width:43%}.troop-table-card th:nth-child(4){width:22%}.password-wrap{gap:3px}.password-wrap input{padding:7px 5px!important;font-size:11px;min-width:0}.wallet-caption{font-size:11px;min-width:22px}.status-balloon{width:9px;height:9px}.actions.login-actions button{font-size:10px;padding:8px 5px}.tab-btn{min-height:42px}.flat-report{overflow-x:auto}}
 @media(max-width:370px){.wrap{padding:7px}.top.hero{padding:10px}.brand-sub{font-size:8px;letter-spacing:1px}.hero-chip{padding:6px;font-size:8px}.save-row{grid-template-columns:minmax(0,1fr) 56px 56px!important}.pass-row{grid-template-columns:minmax(0,1fr) 76px!important}.troop-row{grid-template-columns:minmax(0,1fr) 48px 48px!important}.roomrow{grid-template-columns:minmax(0,1fr) 54px 54px!important}.section-icon{width:34px;height:34px;min-width:34px}.section-heading strong{font-size:12px}input,select{padding:9px 8px!important;font-size:12px}button{font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
@@ -262,7 +262,6 @@ input[type="file"],.native-file-picker{display:block!important;position:fixed!im
   text-shadow:0 0 10px rgba(74,222,128,.24);
 }
 
-.split-mode-settings{grid-template-columns:repeat(3,minmax(0,1fr))!important;align-items:end!important;gap:8px!important}.split-mode-settings .field{min-width:0;align-self:end}.split-mode-settings input:not([type=checkbox]),.split-mode-settings .split-mode-toggle{box-sizing:border-box;width:100%;min-width:0;height:42px;min-height:42px}.split-mode-settings output{display:flex;align-items:center;min-height:42px;padding:0 10px;border:1px solid var(--line);border-radius:10px;color:var(--cyan);font-size:12px}.split-mode-toggle{display:flex;align-items:center;justify-content:center;gap:7px;padding:0 10px;border:1px solid rgba(248,113,113,.8)!important;border-radius:10px;color:#fff!important;background:linear-gradient(135deg,#dc2626,#991b1b)!important;font-size:12px;font-weight:850;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,transform .12s}.split-mode-toggle:active{transform:scale(.97)}.split-mode-toggle.split-mode-on{background:linear-gradient(135deg,#16a34a,#166534)!important;border-color:rgba(74,222,128,.95)!important;box-shadow:0 0 12px rgba(22,163,74,.2)}.split-mode-toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}@media(max-width:600px){.split-mode-settings{grid-template-columns:repeat(2,minmax(0,1fr))!important}.split-mode-settings .field:last-child{grid-column:1/-1}}
 </style>
 
 <style id="suicide-toggle-style">
@@ -632,11 +631,6 @@ document.addEventListener('DOMContentLoaded',()=>{
       <div class="field"><label for="timerKickall">Timer KickAll</label><input id="timerKickall" type="number" min="0" value="1500"></div>
       <div class="field"><label for="kickLimitPerWs">Kick Limit/500ms/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="150"></div>
     </div>
-    <div class="room-timer-row split-mode-settings">
-      <div class="field"><label for="splitModeButton">Split Mode</label><input id="splitMode" type="checkbox" hidden><button id="splitModeButton" type="button" class="split-mode-toggle split-mode-off" aria-pressed="false" aria-label="Split Mode OFF" title="Aktifkan Split Mode" onclick="toggleSplitMode()">⏻ OFF</button></div>
-      <div class="field"><label for="splitCountdownMs">Countdown Split (ms, maks. 300)</label><input id="splitCountdownMs" type="number" min="0" max="300" step="1" value="100" inputmode="numeric"></div>
-      <div class="field"><label>Split Countdown Status</label><output id="splitCountdownDisplay">Idle</output></div>
-    </div>
     <div class="duel-settings-row">
       <div class="field"><label for="delaySocket">Delay Socket (ms)</label><input id="delaySocket" type="number" min="0" value="25"></div>
       <div class="field"><label for="delaySocketApplyEvery">Delay Socket Apply</label><select id="delaySocketApplyEvery">
@@ -896,23 +890,12 @@ function dispatchSocketEvent(m,i){
     if(m.type==="kick.countdown.error") log(0,"Backend countdown error: "+(m.error||"unknown"));
     return;
   }
-  if(m.type==="kick.split.phase"){
-    const el=document.getElementById("splitCountdownDisplay");
-    if(el)el.textContent=m.phase==="group1"?"Kelompok 1 / WS1-5":m.phase==="group2"?"Kelompok 2 / WS6-10":"—";
-    log(0,m.phase==="group1"?"SPLIT: kelompok 1 (WS1-5) mulai": "SPLIT: countdown selesai, kelompok 2 (WS6-10) mulai");return;
-  }
-  if(m.type==="kick.split.countdown"){
-    const el=document.getElementById("splitCountdownDisplay");
-    if(el)el.textContent=String(Math.max(0,Number(m.remainingMs)||0))+" ms";
-    return;
-  }
   if(m.type==="kick.job.started"){
     kickRunning=true;
     setKickButtonState(true);
     return;
   }
   if(m.type==="kick.job.finished"){
-    const splitDisplay=document.getElementById("splitCountdownDisplay");if(splitDisplay)splitDisplay.textContent="Selesai";
     kickRunning=false;
     setKickButtonState(false);
     return;
@@ -921,7 +904,7 @@ function dispatchSocketEvent(m,i){
   if(m.type==="proxy.error"){status(i,"PROXY ERROR","error");log(i,"PROXY ERROR: "+(m.data?.message||"unknown"));return}
   if(isKickEvent(m)){startCountdownFromKick(m)}
   if(handleParticipants(m,i))return;
-  if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password,slot:i+1},true)}
+  if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password},true)}
   else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");startPing(i);send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
   else if(m.type==="room.join.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.joined===true||m.success===true;if(ok){clients[i].inRoom=true;log(i,"ENTER ROOM OK");const r=roomEl.value.trim();if(r)send(i,{type:"room.participants",room:r},true)}else log(i,"ENTER ROOM RESULT "+JSON.stringify(m))}
   else if(m.type==="room.leave.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.left===true||m.success===true;if(ok){clients[i].inRoom=false;log(i,"LEAVE ROOM OK")}else log(i,"LEAVE ROOM RESULT "+JSON.stringify(m))}
@@ -1028,37 +1011,6 @@ function stopCountdown(reset=true){
   if(frontendCountdownInterval){clearInterval(frontendCountdownInterval);frontendCountdownInterval=null}
   setCountdownValue(reset?COUNTDOWN_DEFAULT:0);
 }
-function updateSplitModeButton(){
-  const checkbox=document.getElementById("splitMode");
-  const button=document.getElementById("splitModeButton");
-  if(!checkbox||!button)return;
-  const enabled=!!checkbox.checked;
-  button.classList.toggle("split-mode-on",enabled);
-  button.classList.toggle("split-mode-off",!enabled);
-  button.textContent=enabled?"⏻ ON":"⏻ OFF";
-  button.setAttribute("aria-pressed",enabled?"true":"false");
-  button.setAttribute("aria-label",enabled?"Split Mode ON":"Split Mode OFF");
-  button.title=enabled?"Matikan Split Mode":"Aktifkan Split Mode";
-}
-function toggleSplitMode(){
-  const checkbox=document.getElementById("splitMode");
-  if(!checkbox)return;
-  checkbox.checked=!checkbox.checked;
-  updateSplitModeButton();
-  if(typeof syncBackendAutoConfig==="function")void syncBackendAutoConfig(true);
-}
-function clampSplitCountdown(){
-  const input=document.getElementById("splitCountdownMs");
-  if(!input)return;
-  const parsed=Number(input.value);
-  if(!Number.isFinite(parsed)){input.value="0";return;}
-  input.value=String(Math.min(300,Math.max(0,Math.trunc(parsed))));
-}
-document.getElementById("splitCountdownMs")?.addEventListener("input",clampSplitCountdown);
-document.getElementById("splitCountdownMs")?.addEventListener("change",clampSplitCountdown);
-document.getElementById("splitCountdownMs")?.addEventListener("blur",clampSplitCountdown);
-updateSplitModeButton();
-
 function resetCountdownTimer(){
   stopCountdown(true);
   log(0,'Countdown di-reset ke 60000 dan berhenti');
@@ -1091,7 +1043,7 @@ async function syncBackendAutoConfig(force=false){
   autoConfigSyncBusy=true;
   try{
     const targets=getTargetNames();
-    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),splitMode:!!document.getElementById('splitMode')?.checked,splitCountdownMs:Math.min(300,Math.max(0,Number(document.getElementById('splitCountdownMs')?.value)||0)),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),targetOrder:document.getElementById('targetOrder')?.value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
+    const cfg={room:getRoom(),targets,countdownMs:COUNTDOWN_DEFAULT,timerKickall:Math.max(0,Number(document.getElementById('timerKickall')?.value)||0),loop:Math.min(200,Math.max(1,Number(document.getElementById('loopKick')?.value)||1)),socketApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery')?.value)||1)),targetApplyEvery:Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery')?.value)||1)),delaySocket:Math.max(0,Number(document.getElementById('delaySocket')?.value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget')?.value)||0),targetOrder:document.getElementById('targetOrder')?.value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs')?.value)||150))};
     const payload=JSON.stringify(cfg);
     const now=Date.now();
     // Skip unchanged config posts during the 500ms watcher. A periodic refresh
@@ -1569,7 +1521,7 @@ async function kickAll(){
   const loop=Math.min(200,Math.max(1,Number(document.getElementById('loopKick').value)||1));
   const socketApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delaySocketApplyEvery').value)||1));
   const targetApplyEvery=Math.min(10,Math.max(1,Number(document.getElementById('delayTargetApplyEvery').value)||1));
-  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),targetOrder:document.getElementById('targetOrder').value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),splitMode:!!document.getElementById('splitMode')?.checked,splitCountdownMs:Math.min(300,Math.max(0,Number(document.getElementById('splitCountdownMs')?.value)||0)),};
+  const cfg={room,targets,loop,socketApplyEvery,targetApplyEvery,delaySocket:Math.max(0,Number(document.getElementById('delaySocket').value)||0),delayTarget:Math.max(0,Number(document.getElementById('delayTarget').value)||0),targetOrder:document.getElementById('targetOrder').value||'ascending',kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById('kickLimitPerWs').value)||150)),};
   log(0,`KICKALL mulai: ${targets.length} target | Delay Socket setiap ${socketApplyEvery} socket | Delay Target setiap ${targetApplyEvery} target | Loop=${cfg.loop} | delaySocket=${cfg.delaySocket}ms | delayTarget=${cfg.delayTarget}ms | limit=${cfg.kickLimitPerWs}/500ms/WS`);
   await syncBackendAutoConfig(true);
   const resetGeneration=troopResetGeneration;
@@ -1999,9 +1951,7 @@ function collectKickSet(){
     kickLimitPerWs:Number(document.getElementById("kickLimitPerWs").value)||150,
     loopKick:Number(document.getElementById("loopKick").value)||1,
     
-    timerKickall:Number(document.getElementById("timerKickall").value)||0,
-    splitMode:!!document.getElementById("splitMode").checked,
-    splitCountdownMs:Math.min(300,Math.max(0,Number(document.getElementById("splitCountdownMs").value)||0))
+    timerKickall:Number(document.getElementById("timerKickall").value)||0
   };
 }
 function applyKickSet(cfg){
@@ -2014,9 +1964,6 @@ function applyKickSet(cfg){
   document.getElementById("loopKick").value=String(cfg.loopKick??65);
   
   document.getElementById("timerKickall").value=String(cfg.timerKickall??1500);
-  document.getElementById("splitMode").checked=!!cfg.splitMode;
-  document.getElementById("splitCountdownMs").value=String(Math.min(300,Math.max(0,Number(cfg.splitCountdownMs??0)||0)));
-  updateSplitModeButton();
 }
 async function saveKickSet(){
   const name=document.getElementById("saveLoadSet").value.trim() || "kickset";
