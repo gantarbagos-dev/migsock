@@ -47,7 +47,7 @@ from auth import (
     SESSION_COOKIE, create_session, authenticate, destroy_session, get_session,
     init_auth_db, list_users, create_user, set_enabled, delete_user, change_password,
     get_session_ttl, set_session_ttl, SESSION_TTL_MIN, SESSION_TTL_MAX,
-    register_or_check_device, list_devices, set_device_status, delete_device,
+    register_or_check_device, list_devices, set_device_status, delete_device, SESSIONS,
 )
 
 ROOT = Path(__file__).resolve().parent / "public"
@@ -70,6 +70,8 @@ BROWSER_SESSION = {}
 BROWSER_CLIENTS = set()
 # Upstream sessions are kept alive after the browser control socket disconnects.
 DETACHED_UPSTREAM = {}
+# Task/session handles for every upstream WS, including sockets still attached to a browser.
+UPSTREAM_TASKS = {}
 
 
 async def _current_user(request):
@@ -527,22 +529,20 @@ def register_socket(session_id, username, ws, role="troop"):
     UPSTREAM_SEND_LOCKS.setdefault(id(ws), asyncio.Lock())
 
 async def _close_upstream_resource(ws):
-    resource = DETACHED_UPSTREAM.pop(id(ws), None)
-    if resource:
-        tasks = []
-        for task_name in ("relay_task", "ping_task"):
-            task = resource.get(task_name)
-            if task and task is not asyncio.current_task() and not task.done():
-                task.cancel()
-                tasks.append(task)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        session = resource.get("session")
-    else:
-        session = None
+    resource = DETACHED_UPSTREAM.pop(id(ws), None) or {}
+    task_info = UPSTREAM_TASKS.pop(id(ws), None) or {}
+    tasks = []
+    for task_name in ("relay_task", "ping_task"):
+        task = resource.get(task_name) or task_info.get(task_name)
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            tasks.append(task)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    session = resource.get("session") or task_info.get("session")
     try:
         if ws is not None and not ws.closed:
-            await ws.close(code=1000, message=b"backend cleanup")
+            await ws.close(code=1000, message=b"admin/backend cleanup")
     except Exception:
         pass
     sid = WS_SESSION.get(id(ws))
@@ -1775,6 +1775,61 @@ async def admin_delete_user(request):
         return json_response({"ok": False, "error": str(e)}, status=400)
 
 @require_admin
+async def admin_ws_members(request):
+    grouped = {}
+    for sid, sockets in list(SESSION_UPSTREAM.items()):
+        member_session = SESSIONS.get(sid) or {}
+        member = str(member_session.get("username", "")).strip()
+        if not member:
+            continue
+        bucket = grouped.setdefault(member.casefold(), {
+            "username": member, "ws_accounts": [], "ws_count": 0,
+            "detached_count": 0, "ping_running": False, "relay_running": False,
+        })
+        for ws_name, ws in list(sockets.items()):
+            if ws is None or getattr(ws, "closed", True):
+                continue
+            info = UPSTREAM_TASKS.get(id(ws), {})
+            detached = id(ws) in DETACHED_UPSTREAM
+            ping_task = info.get("ping_task") or DETACHED_UPSTREAM.get(id(ws), {}).get("ping_task")
+            relay_task = info.get("relay_task") or DETACHED_UPSTREAM.get(id(ws), {}).get("relay_task")
+            bucket["ws_accounts"].append({
+                "username": str(ws_name),
+                "role": WS_ROLE.get(id(ws), "troop"),
+                "detached": detached,
+                "ping_running": bool(ping_task and not ping_task.done()),
+                "relay_running": bool(relay_task and not relay_task.done()),
+            })
+            bucket["ws_count"] += 1
+            bucket["detached_count"] += int(detached)
+            bucket["ping_running"] = bucket["ping_running"] or bool(ping_task and not ping_task.done())
+            bucket["relay_running"] = bucket["relay_running"] or bool(relay_task and not relay_task.done())
+    members = sorted(grouped.values(), key=lambda item: item["username"].casefold())
+    return json_response({"ok": True, "members": members})
+
+
+@require_admin
+async def admin_ws_member_cleanup(request):
+    member_username = str(request.match_info.get("username", "")).strip()
+    if not member_username:
+        return json_response({"ok": False, "error": "Username anggota tidak valid"}, status=400)
+    target_sids = [
+        sid for sid, member_session in list(SESSIONS.items())
+        if str(member_session.get("username", "")).casefold() == member_username.casefold()
+    ]
+    sockets_to_close = []
+    for sid in target_sids:
+        for ws in list((SESSION_UPSTREAM.get(sid) or {}).values()):
+            if ws is not None and not getattr(ws, "closed", True):
+                sockets_to_close.append(ws)
+    if not sockets_to_close:
+        return json_response({"ok": True, "closedSockets": 0, "message": "Tidak ada WS aktif untuk anggota ini"})
+    # Close only sockets owned by this member; never touch other members' sessions.
+    await asyncio.gather(*(_close_upstream_resource(ws) for ws in sockets_to_close), return_exceptions=True)
+    return json_response({"ok": True, "closedSockets": len(sockets_to_close), "message": "Koneksi WS, ping, dan relay anggota dibersihkan"})
+
+
+@require_admin
 async def admin_devices(request):
     status = str(request.query.get("status", "")).strip().lower()
     return json_response({"ok": True, "devices": await asyncio.to_thread(list_devices, status)})
@@ -1927,6 +1982,7 @@ async def proxy(request):
                 if detached_ping is not None and detached_ping is not asyncio.current_task() and not detached_ping.done():
                     detached_ping.cancel()
                     await asyncio.gather(detached_ping, return_exceptions=True)
+                UPSTREAM_TASKS.pop(id(upstream), None)
                 unregister_socket(session_id, upstream_username, upstream)
                 if session is not None and not session.closed:
                     await session.close()
@@ -1946,6 +2002,11 @@ async def proxy(request):
 
         ping_task = asyncio.create_task(upstream_json_ping())
         relay_task = asyncio.create_task(upstream_to_browser())
+        UPSTREAM_TASKS[id(upstream)] = {
+            "ping_task": ping_task,
+            "relay_task": relay_task,
+            "session": session,
+        }
 
         async for msg in browser:
             if msg.type == WSMsgType.TEXT:
@@ -2024,6 +2085,7 @@ async def proxy(request):
                 relay_task.cancel()
                 await asyncio.gather(relay_task, return_exceptions=True)
             if upstream is not None:
+                UPSTREAM_TASKS.pop(id(upstream), None)
                 unregister_socket(session_id, upstream_username, upstream)
                 if not upstream.closed:
                     await upstream.close()
@@ -2077,6 +2139,8 @@ app.router.add_get("/api/admin/update", admin_update_status)
 app.router.add_post("/api/admin/update", admin_update_upload)
 app.router.add_delete("/api/admin/update", admin_update_delete)
 app.router.add_get("/api/admin/users", admin_users)
+app.router.add_get("/api/admin/ws-members", admin_ws_members)
+app.router.add_post("/api/admin/ws-members/{username}/cleanup", admin_ws_member_cleanup)
 app.router.add_get("/api/admin/session-settings", admin_session_settings)
 app.router.add_post("/api/admin/session-settings", admin_session_settings)
 app.router.add_post("/api/admin/password", admin_change_password)
